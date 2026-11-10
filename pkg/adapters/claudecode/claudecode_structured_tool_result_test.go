@@ -91,3 +91,37 @@ func TestClaudeSDKContinuedResultsKeepEarlierAnswer(t *testing.T) {
 		t.Fatalf("lost native answer: %q", text)
 	}
 }
+
+// PLAT-746-839: the SDK decoder discarded completed thinking blocks, leaving
+// Show thinking empty even when the provider had supplied a block.
+func TestClaudeStructuredThinkingIsSeparateFromReplyAndNotDuplicatedByDeltas(t *testing.T) {
+	frames := []string{
+		`{"type":"stream_event","event":{"type":"message_start"}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Provider summary."}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Provider summary.","signature":"not-displayed"},{"type":"redacted_thinking","data":"not-displayed"},{"type":"tool_use","id":"tool-1","name":"Read"}]}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"The answer."}}}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"The answer."}]}}`,
+	}
+	var text claudeStructuredText
+	var reasoning, reply []string
+	for _, frame := range frames {
+		var event claudeStreamEvent
+		if err := json.Unmarshal([]byte(frame), &event); err != nil {
+			t.Fatal(err)
+		}
+		text.observe(event, func(chunk llmtypes.StreamChunk) {
+			switch chunk.Type {
+			case llmtypes.StreamChunkTypeReasoning:
+				reasoning = append(reasoning, chunk.Content)
+			case llmtypes.StreamChunkTypeContent:
+				reply = append(reply, chunk.Content)
+			}
+		})
+	}
+	if len(reasoning) != 1 || reasoning[0] != "Provider summary." {
+		t.Fatalf("reasoning blocks=%v", reasoning)
+	}
+	if strings.Join(reply, "") != "The answer." || text.completed.String() != "The answer." {
+		t.Fatal("thinking changed reply text")
+	}
+}
