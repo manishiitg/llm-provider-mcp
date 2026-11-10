@@ -92,6 +92,7 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 				case 0, 1, 2:
 					b.Next.Tools[key] = state
 				default:
+					b.Next.Tools[key] = state
 					b.Gaps++
 					continue
 				}
