@@ -42,3 +42,47 @@ func TestAgyNativeMutableStepCommit(t *testing.T) {
 		t.Fatalf("committed step missing: %+v", b.Records)
 	}
 }
+
+// An old mutable step must not pin the forward cursor to its first 1024 rows.
+func TestAgyPendingStepDoesNotReplayOrStarveLaterRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "native.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB, status INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO steps VALUES(0,132,NULL,1)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < 1100; i++ {
+		if _, err := db.Exec(`INSERT INTO steps VALUES(?,132,NULL,3)`, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := Read(t.Context(), "agy-cli", "native", path, Cursor{})
+	if err != nil || first.CaughtUp || first.Next.Offset != 1024 {
+		t.Fatalf("first batch: %+v %v", first.Next, err)
+	}
+	second, err := Read(t.Context(), "agy-cli", "native", path, first.Next)
+	if err != nil || !second.CaughtUp || second.Next.Offset != 1100 || len(second.Records) != 76 {
+		t.Fatalf("pending step blocked or replayed the next batch: records=%d cursor=%+v err=%v", len(second.Records), second.Next, err)
+	}
+	idle, err := Read(t.Context(), "agy-cli", "native", path, second.Next)
+	if err != nil || len(idle.Records) != 0 {
+		t.Fatalf("unchanged pending step replayed: %+v %v", idle.Records, err)
+	}
+	if _, err := db.Exec(`UPDATE steps SET status=6 WHERE idx=0`); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := Read(t.Context(), "agy-cli", "native", path, idle.Next)
+	if err != nil || len(stopped.Records) != 1 || stopped.Records[0].State != "stopped" || len(stopped.Next.Tools) != 0 {
+		t.Fatalf("interrupted step remained pending: %+v %v", stopped, err)
+	}
+	last, err := Read(t.Context(), "agy-cli", "native", path, stopped.Next)
+	if err != nil || len(last.Records) != 0 {
+		t.Fatalf("settled step replayed: %+v %v", last.Records, err)
+	}
+}

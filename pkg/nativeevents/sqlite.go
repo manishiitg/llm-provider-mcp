@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
@@ -39,68 +41,107 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 		return b, err
 	}
 	defer db.Close()
-	// Revisit outstanding native steps as well as the newest index: tool status
-	// can change in place while another tool runs. No WAL-unsafe immutable mode.
-	start := c.Offset
-	for key := range c.Tools {
-		if n, e := strconv.ParseInt(key, 10, 64); e == nil && n < start {
-			start = n
+	// Revisit only outstanding rows separately. Rewinding the forward scan to
+	// an old pending step can pin every LIMIT 1024 batch to the same window.
+	consume := func(rows *sql.Rows, pending bool) (int, error) {
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			count++
+			var idx int64
+			var kind, status int
+			var payload []byte
+			var parent sql.NullInt64
+			if err := rows.Scan(&idx, &kind, &payload, &status, &parent); err != nil {
+				return count, err
+			}
+			if !pending && idx >= b.Next.Offset {
+				b.Next.Offset = idx + 1
+			}
+			key := strconv.FormatInt(idx, 10)
+			state := strconv.Itoa(status)
+			if pending && c.Tools[key] == state {
+				continue // An unchanged running row is not a new activity event.
+			}
+			r := llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: fmt.Sprintf("step:%d:%d", idx, status)}
+			if pending && parent.Valid {
+				r.TurnID, r.Origin = "step:"+strconv.FormatInt(parent.Int64, 10), "human"
+			}
+			switch kind {
+			case 14:
+				b.Next.TurnID, b.Next.Origin = "step:"+key, "human"
+				r.Kind, r.State = "turn", "started"
+			case 15:
+				if status != 3 {
+					if status == 6 {
+						delete(b.Next.Tools, key) // Interrupted text is not a committed reply.
+					} else {
+						b.Next.Tools[key] = state
+					}
+					continue
+				}
+				r.Text, _, _ = agycli.DecodeNativeStepText(kind, payload)
+				r.Kind, r.State = "reply", "committed"
+			case 132:
+				r.Kind, r.State = "tool", "started"
+				switch status {
+				case 3:
+					r.State = "finished"
+				case 6:
+					r.State = "stopped"
+				case 0, 1, 2:
+					b.Next.Tools[key] = state
+				default:
+					b.Gaps++
+					continue
+				}
+			case 17:
+				r.Kind, r.State = "error", "failed"
+			case 101:
+				r.Kind, r.State = "notice", "observed"
+			default:
+				b.Unknown["step:"+strconv.Itoa(kind)]++
+				continue
+			}
+			if status == 3 || status == 6 {
+				delete(b.Next.Tools, key)
+			}
+			emit(&b, r)
+		}
+		return count, rows.Err()
+	}
+	if len(c.Tools) > 0 {
+		keys := make([]string, 0, len(c.Tools))
+		for key := range c.Tools {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		args := make([]any, 0, len(keys)+1)
+		for _, key := range keys {
+			idx, err := strconv.ParseInt(key, 10, 64)
+			if err != nil {
+				return b, fmt.Errorf("invalid pending native step index")
+			}
+			args = append(args, idx)
+		}
+		args = append(args, c.Offset)
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+		// A mutable old tool belongs to its original turn, not the latest one.
+		rows, err := db.QueryContext(ctx, `SELECT s.idx,s.step_type,s.step_payload,s.status,
+			(SELECT MAX(t.idx) FROM steps t WHERE t.step_type=14 AND t.idx<=s.idx)
+			FROM steps s WHERE s.idx IN (`+placeholders+`) AND s.idx<? ORDER BY s.idx`, args...)
+		if err != nil {
+			return b, err
+		}
+		if _, err := consume(rows, true); err != nil {
+			return b, err
 		}
 	}
-	rows, err := db.QueryContext(ctx, `SELECT idx,step_type,step_payload,status FROM steps WHERE idx>=? ORDER BY idx LIMIT 1024`, start)
+	rows, err := db.QueryContext(ctx, `SELECT idx,step_type,step_payload,status,NULL FROM steps WHERE idx>=? ORDER BY idx LIMIT 1024`, c.Offset)
 	if err != nil {
 		return b, err
 	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var idx int64
-		var kind, status int
-		var payload []byte
-		if err := rows.Scan(&idx, &kind, &payload, &status); err != nil {
-			return b, err
-		}
-		if idx > b.Next.Offset {
-			b.Next.Offset = idx
-		}
-		key := strconv.FormatInt(idx, 10)
-		r := llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: fmt.Sprintf("step:%d:%d", idx, status)}
-		switch kind {
-		case 14:
-			b.Next.TurnID, b.Next.Origin = "step:"+key, "human"
-			r.Kind, r.State = "turn", "started"
-		case 15:
-			if status != 3 {
-				b.Next.Tools[key] = "pending"
-				continue
-			}
-			r.Text, _, _ = agycli.DecodeNativeStepText(kind, payload)
-			r.Kind, r.State = "reply", "committed"
-		case 132:
-			r.Kind, r.State = "tool", "started"
-			if status == 3 {
-				r.State = "finished"
-			} else if status != 0 && status != 1 && status != 2 {
-				b.Gaps++
-				continue
-			}
-			if status != 3 {
-				b.Next.Tools[key] = "pending"
-			}
-		case 17:
-			r.Kind, r.State = "error", "failed"
-		case 101:
-			r.Kind, r.State = "notice", "observed"
-		default:
-			b.Unknown["step:"+strconv.Itoa(kind)]++
-			continue
-		}
-		if status == 3 {
-			delete(b.Next.Tools, key)
-		}
-		emit(&b, r)
-	}
+	count, err := consume(rows, false)
 	b.CaughtUp = count < 1024
-	return b, rows.Err()
+	return b, err
 }
