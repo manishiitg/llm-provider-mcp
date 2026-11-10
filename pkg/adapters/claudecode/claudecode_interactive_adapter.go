@@ -815,17 +815,29 @@ func (c *ClaudeCodeInteractiveAdapter) GetModelMetadata(modelID string) (*llmtyp
 	}
 
 	switch modelID {
+	case "claude-fable-5-2":
+		// Anthropic pricing page (2026-11-10): cache hits are 0.025x input on
+		// Fable 5.2 and 5.1; 5-minute cache writes 1.25x.
+		return &llmtypes.ModelMetadata{
+			ModelID:                         modelID,
+			Provider:                        "claude-code",
+			ModelName:                       "Claude Fable 5.2",
+			ContextWindow:                   1000000,
+			InputCostPer1MTokens:            8.00,
+			OutputCostPer1MTokens:           40.00,
+			CachedInputCostPer1MTokens:      0.20,
+			CachedInputCostWritePer1MTokens: 10.00,
+		}, nil
 	case "claude-fable-5-1":
 		return &llmtypes.ModelMetadata{
-			ModelID:               modelID,
-			Provider:              "claude-code",
-			ModelName:             "Claude Fable 5.1",
-			ContextWindow:         1000000,
-			InputCostPer1MTokens:  10.00,
-			OutputCostPer1MTokens: 50.00,
-			// Cache read pricing (10% of base input), matching the same
-			// models in pkg/adapters/anthropic/anthropic_models.go.
-			CachedInputCostPer1MTokens: 1.0,
+			ModelID:                         modelID,
+			Provider:                        "claude-code",
+			ModelName:                       "Claude Fable 5.1",
+			ContextWindow:                   1000000,
+			InputCostPer1MTokens:            10.00,
+			OutputCostPer1MTokens:           50.00,
+			CachedInputCostPer1MTokens:      0.25,
+			CachedInputCostWritePer1MTokens: 12.50,
 		}, nil
 	case "claude-opus-5-5":
 		return &llmtypes.ModelMetadata{

@@ -3,6 +3,8 @@ package claudecode
 import (
 	"math"
 	"testing"
+
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
 // claudeCodeCachePricedModels lists every model ID the two claude-code
@@ -13,7 +15,6 @@ import (
 // merely imprecise -- it can understate the real spend by more than the
 // entire reported amount, and it always errs low.
 var claudeCodeCachePricedModels = []string{
-	"claude-fable-5-1",
 	"claude-opus-5",
 	"claude-sonnet-5-5",
 	"claude-haiku-5-5",
@@ -86,6 +87,34 @@ func TestClaudeCodeOpus55Pricing(t *testing.T) {
 		}
 		if input != 4 || output != 20 || cacheRead != 0.2 || cacheWrite != 5 {
 			t.Errorf("%s Opus 5.5 pricing = (%v, %v, %v, %v), want (4, 20, 0.2, 5)", name, input, output, cacheRead, cacheWrite)
+		}
+	}
+}
+
+// Fable 5.2 and 5.1 price cache hits at 0.025x input and 5-minute cache
+// writes at 1.25x (Anthropic pricing page, 2026-11-10). Fable 5.1 was priced
+// at 10% before, overstating cache reads fourfold.
+func TestClaudeCodeFablePricing(t *testing.T) {
+	for modelID, want := range map[string][4]float64{
+		"claude-fable-5-2": {8, 40, 0.20, 10},
+		"claude-fable-5-1": {10, 50, 0.25, 12.50},
+	} {
+		for name, meta := range map[string]func() (*llmtypes.ModelMetadata, error){
+			"interactive": func() (*llmtypes.ModelMetadata, error) {
+				return NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{}).GetModelMetadata(modelID)
+			},
+			"compat": func() (*llmtypes.ModelMetadata, error) {
+				return NewClaudeCodeAdapter("", modelID, &MockLogger{}).GetModelMetadata(modelID)
+			},
+		} {
+			m, err := meta()
+			if err != nil {
+				t.Fatalf("%s %s metadata: %v", name, modelID, err)
+			}
+			got := [4]float64{m.InputCostPer1MTokens, m.OutputCostPer1MTokens, m.CachedInputCostPer1MTokens, m.CachedInputCostWritePer1MTokens}
+			if got != want {
+				t.Errorf("%s %s pricing = %v, want %v", name, modelID, got, want)
+			}
 		}
 	}
 }
