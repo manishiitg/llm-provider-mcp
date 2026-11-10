@@ -85,4 +85,20 @@ func TestAgyPendingStepDoesNotReplayOrStarveLaterRecords(t *testing.T) {
 	if err != nil || len(last.Records) != 0 {
 		t.Fatalf("settled step replayed: %+v %v", last.Records, err)
 	}
+	// PR127: unknown is not a terminal status. Keep it pending so a later
+	// known completion remains visible after the forward cursor moves past it.
+	if _, err := db.Exec(`INSERT INTO steps VALUES(1100,132,NULL,5)`); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := Read(t.Context(), "agy-cli", "native", path, last.Next)
+	if err != nil || unknown.Next.Tools["1100"] == "" || unknown.Gaps != 1 || len(unknown.Records) != 0 {
+		t.Fatalf("unknown tool was lost or treated as finished: %+v %v", unknown, err)
+	}
+	if _, err := db.Exec(`UPDATE steps SET status=3 WHERE idx=1100`); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := Read(t.Context(), "agy-cli", "native", path, unknown.Next)
+	if err != nil || len(finished.Records) != 1 || finished.Records[0].State != "finished" || len(finished.Next.Tools) != 0 {
+		t.Fatalf("unknown tool's later completion was lost: %+v %v", finished, err)
+	}
 }
