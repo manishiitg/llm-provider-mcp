@@ -38,6 +38,88 @@ type SDKBackgroundTask struct {
 	StartedAt   time.Time `json:"started_at"`
 }
 
+// SDKHelperTask is lifecycle evidence from this query's native Agent tasks.
+// No child prompt, command, tool output or secret value is copied into it.
+type SDKHelperTask struct {
+	TaskID      string `json:"task_id"`
+	RunID       string `json:"run_id"`
+	ToolUseID   string `json:"tool_use_id"`
+	Description string `json:"description"`
+	StartedAt   int64  `json:"started_at"`
+	State       string `json:"state"`
+}
+
+type SDKHelperUpdate struct {
+	Owner           string
+	NativeSessionID string
+	Task            SDKHelperTask
+}
+
+var claudeSDKHelperListener atomic.Pointer[func(SDKHelperUpdate)]
+
+// SetSDKHelperListener observes native helpers on their exact parent chat.
+func SetSDKHelperListener(listener func(SDKHelperUpdate)) {
+	if listener == nil {
+		claudeSDKHelperListener.Store(nil)
+	} else {
+		claudeSDKHelperListener.Store(&listener)
+	}
+}
+
+func (s *claudeSDKSession) observeHelper(task SDKHelperTask) {
+	if task.TaskID == "" {
+		return
+	}
+	switch task.State {
+	case "started", "finished", "failed", "interrupted", "progress":
+	default:
+		return
+	}
+	s.mu.Lock()
+	if s.helpers == nil {
+		s.helpers = map[string]SDKHelperTask{}
+	}
+	previous, exists := s.helpers[task.TaskID]
+	if exists && previous.RunID != "" && task.RunID != "" && task.RunID < previous.RunID {
+		s.mu.Unlock()
+		return
+	}
+	if task.State == "progress" && (!exists || previous.RunID != task.RunID || previous.State != "started") {
+		s.mu.Unlock()
+		return
+	}
+	if exists && previous.RunID == task.RunID && (previous.State == task.State || previous.State != "started") {
+		s.mu.Unlock()
+		return
+	}
+	if task.State != "progress" {
+		s.helpers[task.TaskID] = task
+	}
+	nativeID := s.nativeID
+	s.mu.Unlock()
+	if task.State != "progress" {
+		s.logf("[SDK_HELPER] session=%s task=%s state=%s", s.owner, task.TaskID, task.State)
+	}
+	if listener := claudeSDKHelperListener.Load(); listener != nil {
+		(*listener)(SDKHelperUpdate{Owner: s.owner, NativeSessionID: nativeID, Task: task})
+	}
+}
+
+func (s *claudeSDKSession) interruptHelpers() {
+	s.mu.Lock()
+	var tasks []SDKHelperTask
+	for _, task := range s.helpers {
+		if task.State == "started" {
+			tasks = append(tasks, task)
+		}
+	}
+	s.mu.Unlock()
+	for _, task := range tasks {
+		task.State = "interrupted"
+		s.observeHelper(task)
+	}
+}
+
 // SDKBackgroundUpdate is the full list of a chat's running background tasks.
 // Closed names why a kept session ended ("finished", "stopped", "idle",
 // "replaced"); the list is then empty. IdleLimit is the idle bound in use.
@@ -251,6 +333,7 @@ type claudeSDKSession struct {
 	mu        sync.Mutex
 	nativeID  string
 	tasks     []SDKBackgroundTask
+	helpers   map[string]SDKHelperTask
 	parked    bool
 	closing   bool
 	idle      *time.Timer
@@ -367,7 +450,8 @@ func (s *claudeSDKSession) drain() {
 			return
 		case line, ok := <-s.reader.lines:
 			if !ok {
-				return // the process exited; its waiter reports it
+				s.interruptHelpers()
+				return // all task bookends have now been consumed
 			}
 			s.handleKeptLine(line)
 		}
@@ -384,6 +468,10 @@ func (s *claudeSDKSession) handleKeptLine(line string) {
 		return
 	}
 	switch ev.Type {
+	case "sdk_helper":
+		if ev.Helper != nil {
+			s.observeHelper(*ev.Helper)
+		}
 	case "sdk_background":
 		tasks := claudeSDKTasksFromWire(ev.Background)
 		s.setTasks(tasks)
@@ -452,8 +540,10 @@ func (s *claudeSDKSession) shutdown() {
 // exit within a short grace.
 func (s *claudeSDKSession) endReleased() {
 	go func() {
-		for range s.reader.lines {
+		for line := range s.reader.lines {
+			s.handleKeptLine(line)
 		}
+		s.interruptHelpers()
 	}()
 	go func() {
 		select {

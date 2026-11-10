@@ -32,12 +32,14 @@ type claudeStreamEvent struct {
 	// SDKParkedTurn: output of a model turn the SDK ran on its own in a kept
 	// session; never part of the host's turn.
 	SDKParkedTurn bool                `json:"sdk_parked_turn,omitempty"`
+	Helper        *SDKHelperTask      `json:"helper,omitempty"`
 	Background    []claudeSDKWireTask `json:"background,omitempty"`
 	SDKHold       *struct {
-		Unsettled  int `json:"unsettled"`
-		MovedAside int `json:"moved_aside"`
-		Queued     int `json:"queued"`
-		Background int `json:"background"`
+		Unsettled  int  `json:"unsettled"`
+		MovedAside int  `json:"moved_aside"`
+		Queued     int  `json:"queued"`
+		Background int  `json:"background"`
+		Helpers    bool `json:"helpers"`
 	} `json:"sdk_hold,omitempty"`
 	InputNotSent bool            `json:"input_not_sent,omitempty"`
 	ControlID    string          `json:"id,omitempty"`
@@ -587,6 +589,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 			case "sdk_permission_cancel":
 				questions.Cancel(ev.RequestID)
+			case "sdk_helper":
+				if sess != nil && ev.Helper != nil {
+					sess.observeHelper(*ev.Helper)
+				}
+
 			case "sdk_background":
 				if sess != nil {
 					sess.setTasks(claudeSDKTasksFromWire(ev.Background))
@@ -692,7 +699,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 				// The turn ends only when sdk_continues is false; log why it stays open.
 				if ev.SDKHold != nil {
-					c.logger.Infof("[CLAUDE_SDK] result session=%s continues=%t unsettled=%d moved_aside=%d queued=%d background=%d", sessionID, ev.SDKContinues, ev.SDKHold.Unsettled, ev.SDKHold.MovedAside, ev.SDKHold.Queued, ev.SDKHold.Background)
+					c.logger.Infof("[CLAUDE_SDK] result session=%s continues=%t unsettled=%d moved_aside=%d queued=%d background=%d helpers=%t", sessionID, ev.SDKContinues, ev.SDKHold.Unsettled, ev.SDKHold.MovedAside, ev.SDKHold.Queued, ev.SDKHold.Background, ev.SDKHold.Helpers)
 				} else {
 					c.logger.Infof("[CLAUDE_SDK] result session=%s continues=%t", sessionID, ev.SDKContinues)
 				}
@@ -761,6 +768,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	} else {
 		if sess != nil {
 			<-sess.exited
+			sess.interruptHelpers()
 			waitErr = sess.waitErr
 		} else {
 			<-reader.done
@@ -1028,7 +1036,7 @@ func claudeContinuedResultText(previous string, event claudeStreamEvent, continu
 func claudeUnshownEvent(ev claudeStreamEvent) string {
 	switch ev.Type {
 	case "stream_event", "assistant", "user", "result", "rate_limit_event",
-		"sdk_permission", "sdk_permission_cancel", "sdk_control_result", "sdk_background":
+		"sdk_permission", "sdk_permission_cancel", "sdk_control_result", "sdk_background", "sdk_helper":
 		return ""
 	case "system":
 		switch ev.Subtype {
