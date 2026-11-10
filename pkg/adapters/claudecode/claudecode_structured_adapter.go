@@ -302,8 +302,12 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		launchPrompt = ""
 	}
 	args, sessionID := buildClaudeStructuredArgs(c.modelID, launchPrompt, tools, allowedTools, permissionMode, mcpConfigPath, resumeSessionID, freshSessionID, workingDir)
-	var rememberInstructions func()
-	prompt, rememberInstructions = claudeCurrentResumeInstructions(opts, workingDir, sessionID, systemPrompt, prompt, resumeSessionID != "")
+	rememberInstructions := func() {}
+	// /compact must reach Claude as the whole input: wrapped in the refreshed instructions it is an ordinary message
+	// that Claude answers without compacting. The next person message still carries the changed instructions.
+	if !idleCompact {
+		prompt, rememberInstructions = claudeCurrentResumeInstructions(opts, workingDir, sessionID, systemPrompt, prompt, resumeSessionID != "")
+	}
 	defer func() {
 		if err == nil {
 			rememberInstructions()
