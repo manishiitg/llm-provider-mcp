@@ -38,6 +38,14 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 			return
 		}
 		for _, block := range ev.Message.Content {
+			// PLAT-746-839: the SDK supplies completed thinking blocks separately
+			// from text. Forward them on the existing reasoning channel, never
+			// into the reply. Partial thinking deltas remain ignored here so the
+			// completed block is emitted once, not repeated after its fragments.
+			if block.Type == "thinking" && strings.TrimSpace(block.Thinking) != "" {
+				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeReasoning, Content: block.Thinking})
+				continue
+			}
 			if block.Type != "text" || block.Text == "" {
 				continue
 			}

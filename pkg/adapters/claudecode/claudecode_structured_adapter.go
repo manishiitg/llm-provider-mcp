@@ -81,8 +81,9 @@ type claudeStreamMessage struct {
 }
 
 type claudeStreamContentBlock struct {
-	Type string `json:"type"` // "text" | "tool_use" | "tool_result"
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"` // "text" | "tool_use" | "tool_result"
+	Text     string `json:"text,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
 	// tool_use fields (assistant events).
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
