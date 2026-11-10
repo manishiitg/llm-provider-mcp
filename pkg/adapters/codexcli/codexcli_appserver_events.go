@@ -29,6 +29,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	var usage, baseline codexAppUsage
 	baselineSet := false
 	toolStarts := map[string]time.Time{}
+	completedMessages := map[string]bool{}
 	streamed := map[string]bool{}
 	seenUserItems := map[string]bool{}
 	lastContentItem := ""
@@ -216,6 +217,13 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					}
 					if !streamed[item.ID] {
 						emitContent(item.ID, item.Text, metadata)
+					}
+					// Completed messages survive token-buffer replacement and
+					// reconnect via the existing durable transcript path.
+					if strings.TrimSpace(item.Text) != "" && !completedMessages[item.ID] {
+						completedMessages[item.ID] = true
+						emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: item.Text,
+							Metadata: map[string]any{"codex_stream_source": "transcript"}})
 					}
 				}
 				if item.Type == "userMessage" && !seenUserItems[item.ID] {

@@ -27,12 +27,17 @@ func TestClaudeStructuredTextPreservesMessageBoundaries(t *testing.T) {
 	want := "Checking dependencies:\n\nReady.\n\n| Name | Value |\n| --- | --- |\n| A | 1 |"
 	var text claudeStructuredText
 	var live strings.Builder
+	var snapshots []string
 	for _, frame := range frames {
 		var event claudeStreamEvent
 		if err := json.Unmarshal([]byte(frame), &event); err != nil {
 			t.Fatal(err)
 		}
 		text.observe(event, func(chunk llmtypes.StreamChunk) {
+			if chunk.Metadata["claude_code_stream_source"] == "transcript" {
+				snapshots = append(snapshots, chunk.Content)
+				return
+			}
 			if chunk.Metadata[llmtypes.ContentDeltaMetadataKey] != true {
 				t.Fatal("SDK delta lost its marker")
 			}
@@ -41,6 +46,9 @@ func TestClaudeStructuredTextPreservesMessageBoundaries(t *testing.T) {
 	}
 	if live.String() != want || text.completed.String() != want {
 		t.Fatalf("message boundaries differ: live=%q saved=%q", live.String(), text.completed.String())
+	}
+	if len(snapshots) != 2 || strings.Join(snapshots, "\n\n") != want {
+		t.Fatalf("completed narration not preserved: %q", snapshots)
 	}
 	// Structured transport supplies completed blocks instead of token deltas.
 	var blocks claudeStructuredText
@@ -53,7 +61,7 @@ func TestClaudeStructuredTextPreservesMessageBoundaries(t *testing.T) {
 			emitted = append(emitted, chunk.Content)
 		})
 	}
-	if strings.Join(emitted, "") != blocks.completed.String() || blocks.completed.String() != "Checking dependencies:\n\nReady." {
+	if strings.Join(emitted, "\n\n") != blocks.completed.String() || blocks.completed.String() != "Checking dependencies:\n\nReady." {
 		t.Fatalf("complete blocks changed: %q", blocks.completed.String())
 	}
 }
@@ -123,5 +131,22 @@ func TestClaudeStructuredThinkingIsSeparateFromReplyAndNotDuplicatedByDeltas(t *
 	}
 	if strings.Join(reply, "") != "The answer." || text.completed.String() != "The answer." {
 		t.Fatal("thinking changed reply text")
+	}
+}
+
+// PLAT-746-838: repeated native delivery must not duplicate a saved message;
+// equal text from distinct messages is still legitimate narration.
+func TestClaudeCompletedNarrationDeduplicatesByMessageNotText(t *testing.T) {
+	var text claudeStructuredText
+	var snapshots []string
+	for _, id := range []string{"m1", "m1", "m2"} {
+		text.observe(claudeStreamEvent{Type: "assistant", Message: &claudeStreamMessage{ID: id, Content: []claudeStreamContentBlock{{Type: "text", Text: "Checking."}}}}, func(c llmtypes.StreamChunk) {
+			if c.Metadata["claude_code_stream_source"] == "transcript" {
+				snapshots = append(snapshots, c.Content)
+			}
+		})
+	}
+	if len(snapshots) != 2 || text.completed.String() != "Checking.\n\nChecking." {
+		t.Fatalf("completed messages: %q", snapshots)
 	}
 }
