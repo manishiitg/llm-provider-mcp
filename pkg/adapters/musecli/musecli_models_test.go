@@ -35,8 +35,8 @@ func TestMuseWonderModelsPublishedWithEfforts(t *testing.T) {
 	}
 }
 
-// Ember is a catalog model: listed with the catalog's context window and efforts,
-// and without an invented price.
+// Ember is listed with the catalog's context window, its efforts and Meta's
+// published standard price.
 func TestMuseEmberModelListed(t *testing.T) {
 	var found bool
 	for _, model := range GetAllMuseCLIModels() {
@@ -44,7 +44,7 @@ func TestMuseEmberModelListed(t *testing.T) {
 			continue
 		}
 		found = true
-		if model.ContextWindow != 1007997 || model.InputCostPer1MTokens != 0 || len(model.ReasoningEffortLevels) == 0 {
+		if model.ContextWindow != 1007997 || model.InputCostPer1MTokens != 0.10 || model.OutputCostPer1MTokens != 0.50 || len(model.ReasoningEffortLevels) == 0 {
 			t.Fatalf("ember metadata = %+v", model)
 		}
 	}

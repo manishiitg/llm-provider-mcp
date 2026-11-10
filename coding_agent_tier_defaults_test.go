@@ -70,65 +70,7 @@ func TestCodingAgentDefaultTierModelsClaudeExecutionTiers(t *testing.T) {
 	}
 }
 
-func TestCodingAgentDefaultTierModelsPulseDefaults(t *testing.T) {
-	tests := []struct {
-		name           string
-		provider       Provider
-		wantModelID    string
-		wantSameAsHigh bool
-		wantReasoning  string
-	}{
-		{
-			name:           "claude code follows high",
-			provider:       ProviderClaudeCode,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
-		},
-		{
-			name:          "codex uses gpt 6.1 sol high",
-			provider:      ProviderCodexCLI,
-			wantModelID:   "gpt-6.1-sol",
-			wantReasoning: "high",
-		},
-		{
-			name:          "cursor uses the certified default",
-			provider:      ProviderCursorCLI,
-			wantModelID:   DefaultCursorCLIModel,
-			wantReasoning: "high",
-		},
-		{
-			name:           "pi follows high",
-			provider:       ProviderPiCLI,
-			wantSameAsHigh: true,
-			wantReasoning:  "high",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			defaults, ok := GetCodingAgentDefaultTierModels(tt.provider)
-			if !ok {
-				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
-			}
-			if defaults.Pulse.Provider != string(tt.provider) {
-				t.Fatalf("pulse provider = %q, want %q", defaults.Pulse.Provider, tt.provider)
-			}
-			if tt.wantSameAsHigh {
-				if defaults.Pulse.Provider != defaults.High.Provider ||
-					defaults.Pulse.ModelID != defaults.High.ModelID {
-					t.Fatalf("pulse = %+v, want same provider/model as high %+v", defaults.Pulse, defaults.High)
-				}
-			} else if defaults.Pulse.ModelID != tt.wantModelID {
-				t.Fatalf("pulse model_id = %q, want %q", defaults.Pulse.ModelID, tt.wantModelID)
-			}
-			if got := defaults.Pulse.Options["reasoning_effort"]; got != tt.wantReasoning {
-				t.Fatalf("pulse reasoning_effort = %#v, want %q", got, tt.wantReasoning)
-			}
-		})
-	}
-}
-
-func TestCodingAgentDefaultTierModelsBuilder(t *testing.T) {
+func TestCodingAgentDefaultTierModelsMain(t *testing.T) {
 	for _, tt := range []struct {
 		provider Provider
 		model    string
@@ -142,19 +84,18 @@ func TestCodingAgentDefaultTierModelsBuilder(t *testing.T) {
 			if !ok {
 				t.Fatalf("GetCodingAgentDefaultTierModels(%q) ok = false", tt.provider)
 			}
-			if defaults.Builder.Provider != string(tt.provider) || defaults.Builder.ModelID != tt.model {
-				t.Fatalf("builder = %+v, want %s/%s", defaults.Builder, tt.provider, tt.model)
+			if defaults.Main.Provider != string(tt.provider) || defaults.Main.ModelID != tt.model {
+				t.Fatalf("main = %+v, want %s/%s", defaults.Main, tt.provider, tt.model)
 			}
-			if defaults.Builder.Options["reasoning_effort"] != tt.effort {
-				t.Fatalf("builder reasoning_effort = %#v, want %q", defaults.Builder.Options["reasoning_effort"], tt.effort)
+			if defaults.Main.Options["reasoning_effort"] != tt.effort {
+				t.Fatalf("main reasoning_effort = %#v, want %q", defaults.Main.Options["reasoning_effort"], tt.effort)
 			}
 		})
 	}
 }
 
 // TestCodingAgentDefaultTierModelsCodexGPT6Family covers the execution tiers.
-// Builder and Pulse use GPT-6.1 Sol with high reasoning and are
-// covered by TestCodingAgentDefaultTierModelsBuilder and the pulse test.
+// Main uses GPT-6.1 Sol with high reasoning (TestCodingAgentDefaultTierModelsMain).
 func TestCodingAgentDefaultTierModelsCodexGPT6Family(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderCodexCLI)
 	if !ok {
@@ -196,8 +137,7 @@ func TestCodingAgentDefaultTierModelsCursorTierDefaults(t *testing.T) {
 	check("high", defaults.High, DefaultCursorCLIModel)
 	check("medium", defaults.Medium, DefaultCursorCLIModel)
 	check("low", defaults.Low, DefaultCursorCLIModel)
-	check("builder", defaults.Builder, DefaultCursorCLIModel)
-	check("pulse", defaults.Pulse, DefaultCursorCLIModel)
+	check("main", defaults.Main, DefaultCursorCLIModel)
 }
 
 func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {
@@ -217,14 +157,14 @@ func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
 		}
 	}
-	check("builder", defaults.Builder, "google/gemini-3.8-flash", "high")
+	check("main", defaults.Main, "google/gemini-3.8-flash", "high")
 	check("high", defaults.High, "google/gemini-3.8-flash", "high")
 	check("medium", defaults.Medium, "google/gemini-3.8-flash", "medium")
 	check("low", defaults.Low, "google/gemini-3.5-flash-lite", "low")
-	check("pulse", defaults.Pulse, "google/gemini-3.8-flash", "high")
 }
 
-func TestCodingAgentDefaultTierModelsMuseSparkForEveryRole(t *testing.T) {
+// Low runs Muse Ember (owner, 2026-11-10); the other roles stay on Spark 1.3.
+func TestCodingAgentDefaultTierModelsMuse(t *testing.T) {
 	defaults, ok := GetCodingAgentDefaultTierModels(ProviderMuseCLI)
 	if !ok {
 		t.Fatal("GetCodingAgentDefaultTierModels(muse-cli) ok = false")
@@ -241,11 +181,10 @@ func TestCodingAgentDefaultTierModelsMuseSparkForEveryRole(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
 		}
 	}
-	check("builder", defaults.Builder, "muse-spark-1.3", "max")
+	check("main", defaults.Main, "muse-spark-1.3", "max")
 	check("high", defaults.High, "muse-spark-1.3", "xhigh")
 	check("medium", defaults.Medium, "muse-spark-1.3", "high")
-	check("low", defaults.Low, "muse-spark-1.3", "medium")
-	check("pulse", defaults.Pulse, "muse-spark-1.3", "max")
+	check("low", defaults.Low, "muse-ember-1.0", "high")
 	t.Setenv("MUSE_CLI_PRIMARY_MODEL", "")
 	if got := GetDefaultModel(ProviderMuseCLI); got != "muse-spark-1.3" {
 		t.Fatalf("unpinned Muse default = %q, want regular Spark 1.3", got)
@@ -300,10 +239,9 @@ func codingAgentPublishedModelMetadata() []*llmtypes.ModelMetadata {
 
 func codingAgentDefaultTierModelRefs(defaults *CodingAgentDefaultTierModels) map[string]CodingAgentTierModelRef {
 	return map[string]CodingAgentTierModelRef{
-		"builder": defaults.Builder,
-		"high":    defaults.High,
-		"medium":  defaults.Medium,
-		"low":     defaults.Low,
-		"pulse":   defaults.Pulse,
+		"main":   defaults.Main,
+		"high":   defaults.High,
+		"medium": defaults.Medium,
+		"low":    defaults.Low,
 	}
 }
