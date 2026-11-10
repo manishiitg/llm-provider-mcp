@@ -5,6 +5,10 @@ import (
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/agycli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/claudecode"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/codexcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/cursorcli"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/picli"
 	musecli "github.com/manishiitg/multi-llm-provider-go/pkg/adapters/musecli"
 )
 
@@ -216,6 +220,12 @@ type CodingAgentProviderContract struct {
 	// or block authors from contributing their own static guidance.
 	WorkingDirInstructionFile string
 
+	// NativeProjectInstructionFiles comes from the provider adapter. Empty means
+	// unknown, not proof that the CLI ignores all files. Hosts may omit their
+	// own injection only when these files are in the actual CLI working root.
+	// This declaration is not evidence that a running CLI loaded a file.
+	NativeProjectInstructionFiles []string
+
 	// UserInstructionFile names the home-directory file the CLI auto-loads
 	// for the operator's persistent style preferences (e.g.
 	// "~/.claude/CLAUDE.md", "~/.codex/AGENTS.md"). DOCUMENTATION ONLY —
@@ -270,6 +280,7 @@ type CodingAgentProviderContract struct {
 
 var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 	ProviderClaudeCode: {
+		NativeProjectInstructionFiles: claudecode.NativeProjectInstructionFiles(),
 		Provider:                      ProviderClaudeCode,
 		DisplayName:                   "Claude Code",
 		CLIName:                       "claude",
@@ -316,6 +327,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsDurableAck:           true,
 	},
 	ProviderCodexCLI: {
+		NativeProjectInstructionFiles: codexcli.NativeProjectInstructionFiles(),
 		Provider:                ProviderCodexCLI,
 		DisplayName:             "Codex CLI",
 		CLIName:                 "codex",
@@ -365,6 +377,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsDurableAck:           true,
 	},
 	ProviderCursorCLI: {
+		NativeProjectInstructionFiles: cursorcli.NativeProjectInstructionFiles(),
 		Provider:                    ProviderCursorCLI,
 		DisplayName:                 "Cursor CLI",
 		CLIName:                     "cursor-agent",
@@ -405,6 +418,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsDurableAck:          false,
 	},
 	ProviderPiCLI: {
+		NativeProjectInstructionFiles: picli.NativeProjectInstructionFiles(),
 		Provider:                    ProviderPiCLI,
 		DisplayName:                 "Pi CLI",
 		CLIName:                     "pi",
@@ -450,6 +464,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsDurableAck:        true,
 	},
 	ProviderMuseCLI: {
+		NativeProjectInstructionFiles: musecli.NativeProjectInstructionFiles(),
 		Provider:                ProviderMuseCLI,
 		DisplayName:             "Muse",
 		CLIName:                 "muse",
@@ -493,6 +508,7 @@ var codingAgentProviderContracts = map[Provider]CodingAgentProviderContract{
 		SupportsDurableAck:          true,
 	},
 	ProviderAgyCLI: {
+		NativeProjectInstructionFiles: agycli.NativeProjectInstructionFiles(),
 		Provider:                ProviderAgyCLI,
 		DisplayName:             "Antigravity",
 		CLIName:                 "agy",
@@ -555,6 +571,7 @@ func GetCodingAgentProviderContractForTransport(provider Provider, modelID, clau
 	if !ok {
 		return CodingAgentProviderContract{}, false
 	}
+	contract.NativeProjectInstructionFiles = append([]string(nil), contract.NativeProjectInstructionFiles...)
 
 	if strings.TrimSpace(contract.ModelID) != "" && !strings.EqualFold(strings.TrimSpace(modelID), contract.ModelID) {
 		return CodingAgentProviderContract{}, false
