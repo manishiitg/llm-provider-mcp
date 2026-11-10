@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -10,9 +11,10 @@ import (
 // tools. Preserve that explicit boundary in both live text and the saved turn;
 // punctuation cannot distinguish a message boundary from a split token.
 type claudeStructuredText struct {
-	partial   bool
-	emitted   bool
-	completed strings.Builder
+	partial       bool
+	emitted       bool
+	completed     strings.Builder
+	seenCompleted map[string]bool
 }
 
 func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.StreamChunk)) {
@@ -37,7 +39,7 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 		if ev.Message == nil {
 			return
 		}
-		for _, block := range ev.Message.Content {
+		for index, block := range ev.Message.Content {
 			// PLAT-746-839: the SDK supplies completed thinking blocks separately
 			// from text. Forward them on the existing reasoning channel, never
 			// into the reply. Partial thinking deltas remain ignored here so the
@@ -49,20 +51,26 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 			if block.Type != "text" || block.Text == "" {
 				continue
 			}
+			// A completed native message is a durable transcript snapshot,
+			// not another token delta. Keep it even when tokens already streamed:
+			// only the final result survives otherwise (PLAT-746-838).
+			if ev.Message.ID != "" {
+				if t.seenCompleted == nil {
+					t.seenCompleted = make(map[string]bool)
+				}
+				key := ev.Message.ID + ":" + strconv.Itoa(index)
+				if t.seenCompleted[key] {
+					continue
+				}
+				t.seenCompleted[key] = true
+			}
 			if t.completed.Len() > 0 {
 				t.completed.WriteString("\n\n")
 			}
 			t.completed.WriteString(block.Text)
-			// The completed message repeats the partial stream. Without partial
-			// events (structured transport), it is a complete block instead.
-			if !t.partial {
-				text := block.Text
-				if t.emitted {
-					text = "\n\n" + text
-				}
-				t.emitted = true
-				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text})
-			}
+			t.emitted = true
+			emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: block.Text,
+				Metadata: map[string]any{"claude_code_stream_source": "transcript"}})
 		}
 	}
 }

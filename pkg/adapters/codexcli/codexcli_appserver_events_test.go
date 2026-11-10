@@ -19,6 +19,7 @@ func TestCodexAppServerSeparatesMessagesWithoutDuplicatingCompletedText(t *testi
 	send("item/agentMessage/delta", `"itemId":"a","delta":"I will "`)
 	send("item/agentMessage/delta", `"itemId":"a","delta":"read it."`)
 	send("item/completed", `"item":{"id":"a","type":"agentMessage","phase":"commentary","text":"I will read it."}`)
+	send("item/completed", `"item":{"id":"a","type":"agentMessage","phase":"commentary","text":"I will read it."}`)
 	// A message received whole must get the same boundary as streamed deltas.
 	send("item/completed", `"item":{"id":"b","type":"agentMessage","phase":"commentary","text":"Read complete.\n\n"}`)
 	send("item/agentMessage/delta", `"itemId":"c","delta":"done\n\n"`)
@@ -26,8 +27,13 @@ func TestCodexAppServerSeparatesMessagesWithoutDuplicatingCompletedText(t *testi
 	send("item/completed", `"item":{"id":"c","type":"agentMessage","phase":"final_answer","text":"done\n\n`+"```text\\nx\\n```"+`"}`)
 	send("turn/completed", `"turn":{"id":"turn","status":"completed"}`)
 	var output strings.Builder
+	var snapshots []string
 	response, err := (&CodexCLIAdapter{}).consumeAppTurn(context.Background(), &codexAppSession{threadID: "thread"}, r, "thread", "turn", func(ch llmtypes.StreamChunk) {
 		if ch.Type == llmtypes.StreamChunkTypeContent {
+			if ch.Metadata["codex_stream_source"] == "transcript" {
+				snapshots = append(snapshots, ch.Content)
+				return
+			}
 			if ch.Metadata[llmtypes.ContentDeltaMetadataKey] != true {
 				t.Fatal("token deltas are mislabeled as whole messages")
 			}
@@ -38,6 +44,9 @@ func TestCodexAppServerSeparatesMessagesWithoutDuplicatingCompletedText(t *testi
 		t.Fatal(err)
 	}
 	final := "done\n\n```text\nx\n```"
+	if len(snapshots) != 3 || snapshots[0] != "I will read it." || snapshots[1] != "Read complete.\n\n" || snapshots[2] != final {
+		t.Fatalf("completed narration not preserved: %q", snapshots)
+	}
 	if output.String() != "I will read it.\n\nRead complete.\n\n"+final || response.Choices[0].Content != final {
 		t.Fatalf("message boundaries or final changed: %q / %q", output.String(), response.Choices[0].Content)
 	}

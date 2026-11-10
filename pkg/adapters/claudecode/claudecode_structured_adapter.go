@@ -75,6 +75,7 @@ type claudeStreamEvent struct {
 }
 
 type claudeStreamMessage struct {
+	ID      string                     `json:"id,omitempty"`
 	Model   string                     `json:"model,omitempty"`
 	Content []claudeStreamContentBlock `json:"content,omitempty"`
 	Usage   *claudeStreamUsage         `json:"usage,omitempty"`
