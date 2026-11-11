@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,4 +36,16 @@ func TestClaudeStructuredFiveHourLimitPreservesQuotaReset(t *testing.T) {
 	if !reset.After(before) || reset.Sub(before) > 24*time.Hour || reset.Hour() != 9 || reset.Minute() != 10 {
 		t.Fatalf("lost 2:40pm Asia/Calcutta reset: %v", reset)
 	}
+	// Typed and serialized completion errors retain Claude's exact local-zone
+	// notice. Neither display path parses a time back from diagnostic text.
+	for _, failure := range []error{err, errors.New(err.Error())} {
+		if display := llmerrors.ProviderDisplay(failure); display.Message != notice {
+			t.Fatalf("lost provider notice: %+v", display)
+		}
+	}
+	memo := &llmerrors.Error{Kind: llmerrors.KindQuotaExhausted, Provider: "claude-code", RetryAt: reset, Err: errors.New("selected model is quota-exhausted")}
+	if display := llmerrors.ProviderDisplay(memo); display.Message != "Claude's usage limit is used up." {
+		t.Fatalf("memo without original notice should not invent a clock: %+v", display)
+	}
+
 }

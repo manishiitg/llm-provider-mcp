@@ -79,6 +79,14 @@ func ProviderDisplay(err error) Display {
 		d.Message = "This account has reached its usage limit."
 		d.Code = "quota_exhausted"
 		d.NextStep = "Check this account’s usage in Providers."
+		if strings.Contains(strings.ToLower(diagnosticPrefix(err.Error())), "claude") {
+			d.Message = "Claude's usage limit is used up."
+			// This is the provider's already-masked sentence, not a parsed or
+			// reconstructed clock. RetryAt remains the scheduling authority.
+			if loc := claudeLimitSentenceRe.FindStringIndex(message); loc != nil && loc[0] == 0 {
+				d.Message = message
+			}
+		}
 	case KindRateLimit:
 		d.Message = "The provider is receiving too many requests."
 		d.Code = "rate_limited"

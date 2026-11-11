@@ -181,7 +181,16 @@ func ClaudeUsageLimitResetAt(text string, now time.Time) time.Time {
 // carries no instant. Quota exhaustion is not throttling; it does not clear in
 // seconds and same-model retries cannot succeed.
 func NewClaudeUsageLimitError(provider, model, paneText string, now time.Time) error {
-	return newClaudeUsageLimitError(provider, model, ClaudeUsageLimitResetAt(paneText, now), "")
+	err := newClaudeUsageLimitError(provider, model, ClaudeUsageLimitResetAt(paneText, now), "")
+	// Keep only the actual notice, not the surrounding transcript. It already
+	// names the reset in the person's timezone (PLAT-746-863).
+	for _, line := range strings.Split(paneText, "\n") {
+		if isClaudeUsageLimitLine(line) {
+			err.Err = errors.New(strings.TrimLeft(line, claudeUsageLimitLineMarkers))
+			break
+		}
+	}
+	return err
 }
 
 // NewClaudeUsageLimitErrorForSession is the same failure built for a live tmux
@@ -228,7 +237,7 @@ func claudeStatuslineUsageLimitState(sessionName string, now time.Time) (known, 
 	return true, true, resetAt, window
 }
 
-func newClaudeUsageLimitError(provider, model string, retryAt time.Time, window string) error {
+func newClaudeUsageLimitError(provider, model string, retryAt time.Time, window string) *llmerrors.Error {
 	return &llmerrors.Error{
 		Kind:     llmerrors.KindQuotaExhausted,
 		Provider: provider,
