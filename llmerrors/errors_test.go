@@ -37,6 +37,10 @@ func TestClassifyKinds(t *testing.T) {
 		{"claude current login is not billing quota", errors.New("Select login method: 1. Claude account with subscription 2. Anthropic Console account · API usage billing"), KindAuth},
 		{"claude pane billing text is not quota", errors.New("failed to clear stale prompt; latest pane tail: API usage billing"), KindUnknown},
 		{"claude code usage", errors.New("you've hit your usage limit, resets at 3pm"), KindQuotaExhausted},
+		// PLAT-746-863: exact wrapped refusal from the SDK result path.
+		{"claude five-hour result", errors.New("llm error: selected LLM failed: claude-code/claude-opus-5-5 [unknown]: claude run reported an error result: You've hit your 5-hour limit · resets 2:40pm (Asia/Calcutta)"), KindQuotaExhausted},
+		{"claude weekly result", errors.New("claude run reported an error result: You've hit your weekly limit · resets 2:40pm (Asia/Calcutta)"), KindQuotaExhausted},
+		{"claude historical window limit", errors.New("failed to clear stale prompt; latest pane tail: You've hit your 5-hour limit · resets 2:40pm (Asia/Calcutta)"), KindUnknown},
 		{"muse usage", errors.New("Usage limit reached · /upgrade; wait for usage to reset at Sep 14 at 5:30 AM"), KindQuotaExhausted},
 		// Codex 0.153+ appends an OFFER to every reply ("You have N usage limit
 		// resets available"); an unrelated failure that embeds that pane must
