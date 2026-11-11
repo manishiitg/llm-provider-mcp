@@ -48,9 +48,9 @@ func TestClaudeColdRegistryClosesOnlySameChatTmuxCopies(t *testing.T) {
 		// Direct argv avoids the verifier account's non-login default shell.
 		run("new-session", "-d", "-s", name, "/bin/sleep", "60")
 		if taggedOwner != "" {
-			run("set-option", "-t", "="+name, tmuxinput.OwnerSessionOption, taggedOwner)
+			run("set-option", "-t", name, tmuxinput.OwnerSessionOption, taggedOwner)
 		}
-		pid, err := strconv.Atoi(run("list-panes", "-t", "="+name, "-F", "#{pane_pid}"))
+		pid, err := strconv.Atoi(run("list-panes", "-t", name, "-F", "#{pane_pid}"))
 		if err != nil {
 			t.Fatal(err)
 		}
