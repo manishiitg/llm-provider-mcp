@@ -101,13 +101,7 @@ func QuotaWindow(err error) string {
 }
 
 func (e *Error) Error() string {
-	message := fmt.Sprintf("%s/%s [%s]: %v", e.Provider, e.Model, e.Kind, e.Err)
-	// Completion events persist the error as text. Keep a known quota reset
-	// visible there, including when a later turn is refused by the quota memo.
-	if e.Kind == KindQuotaExhausted && !e.RetryAt.IsZero() {
-		message += "; resets at " + e.RetryAt.Format(time.RFC3339)
-	}
-	return message
+	return fmt.Sprintf("%s/%s [%s]: %v", e.Provider, e.Model, e.Kind, e.Err)
 }
 
 func (e *Error) Unwrap() error { return e.Err }

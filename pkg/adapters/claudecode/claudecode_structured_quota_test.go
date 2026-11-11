@@ -2,11 +2,8 @@ package claudecode
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,14 +34,5 @@ func TestClaudeStructuredFiveHourLimitPreservesQuotaReset(t *testing.T) {
 	reset := llmerrors.RetryAtOrZero(err)
 	if !reset.After(before) || reset.Sub(before) > 24*time.Hour || reset.Hour() != 9 || reset.Minute() != 10 {
 		t.Fatalf("lost 2:40pm Asia/Calcutta reset: %v", reset)
-	}
-	// The first refusal and a later memo rejection both pass through stored
-	// string-only completion events before their explanation reaches the chat.
-	memo := &llmerrors.Error{Kind: llmerrors.KindQuotaExhausted, Provider: "claude-code", Model: "claude-opus-5-5", RetryAt: reset, Err: errors.New("selected model is quota-exhausted")}
-	for _, failure := range []error{err, errors.New(fmt.Sprintf("llm error: selected LLM failed: %v", err)), errors.New(memo.Error())} {
-		display := llmerrors.ProviderDisplay(failure)
-		if display.Code != "quota_exhausted" || !strings.Contains(display.Message, "9:10am UTC") || display.Retryable {
-			t.Fatalf("reset missing from chat display: %+v", display)
-		}
 	}
 }

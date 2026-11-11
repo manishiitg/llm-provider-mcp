@@ -4,7 +4,6 @@ import (
 	"errors"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // Display is the server's concise, credential-masked explanation of a provider failure.
@@ -25,11 +24,6 @@ var displaySecrets = []struct {
 	{regexp.MustCompile(`\b([A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD))\s*[=:]\s*[^\s"']+`), "${1}=[redacted]"},
 	{regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}\b`), "[redacted]"},
 }
-
-// Only presentation reconstructs this metadata from a stored error string;
-// scheduling continues to use the typed RetryAt, never display text.
-var quotaResetSuffix = regexp.MustCompile(`; resets at ([0-9T:+Z.-]+)$`)
-
 var displayWrapper = regexp.MustCompile(`(?i)^(?:selected LLM failed:\s*|llm error:\s*|[^\s]+/[^\s]+ \[[^\]]+\]:\s*|Cursor SDK (?:turn failed|did not start):\s*)`)
 
 // ProviderDisplay is used for both retry notices and failed-turn metadata.
@@ -85,20 +79,6 @@ func ProviderDisplay(err error) Display {
 		d.Message = "This account has reached its usage limit."
 		d.Code = "quota_exhausted"
 		d.NextStep = "Check this account’s usage in Providers."
-		reset := RetryAtOrZero(err)
-		if reset.IsZero() {
-			if match := quotaResetSuffix.FindStringSubmatch(diagnosticPrefix(err.Error())); len(match) == 2 {
-				reset, _ = time.Parse(time.RFC3339, match[1])
-			}
-		}
-		if !reset.IsZero() {
-			account := "This account's"
-			if strings.Contains(strings.ToLower(diagnosticPrefix(err.Error())), "claude") {
-				account = "Claude's"
-			}
-			d.Message = account + " usage limit is used up; it resets at " + reset.UTC().Format("3:04pm UTC on 2 Jan") + "."
-			d.NextStep = "Try again after the reset."
-		}
 	case KindRateLimit:
 		d.Message = "The provider is receiving too many requests."
 		d.Code = "rate_limited"
