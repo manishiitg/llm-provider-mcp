@@ -2775,7 +2775,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 
 	now := time.Now()
 	session, created, ok := claudeInteractivePersistentRegistry.GetOrCreate(ownerSessionID, func() *claudeInteractivePersistentSession {
-		sessionName := claudePersistentTmuxOwnerPrefix(ownerSessionID) + randomHex(8)
+		sessionName := newTmuxSessionName()
 		session := &claudeInteractivePersistentSession{
 			ownerSessionID:        ownerSessionID,
 			tmuxSessionName:       sessionName,
