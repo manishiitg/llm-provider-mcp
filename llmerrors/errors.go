@@ -101,7 +101,13 @@ func QuotaWindow(err error) string {
 }
 
 func (e *Error) Error() string {
-	return fmt.Sprintf("%s/%s [%s]: %v", e.Provider, e.Model, e.Kind, e.Err)
+	message := fmt.Sprintf("%s/%s [%s]: %v", e.Provider, e.Model, e.Kind, e.Err)
+	// Completion events persist the error as text. Keep a known quota reset
+	// visible there, including when a later turn is refused by the quota memo.
+	if e.Kind == KindQuotaExhausted && !e.RetryAt.IsZero() {
+		message += "; resets at " + e.RetryAt.Format(time.RFC3339)
+	}
+	return message
 }
 
 func (e *Error) Unwrap() error { return e.Err }
@@ -155,6 +161,10 @@ func Classify(provider, model string, err error) error {
 		Err:      err,
 	}
 }
+
+// PLAT-746-863: Claude inserts window names (5-hour, weekly, etc.).
+// Match the reached-limit sentence, not a conditional or a usage-reset offer.
+var claudeLimitSentenceRe = regexp.MustCompile(`(?i)\byou(?:'ve|’ve|\s+have)\s+hit\s+your\s+(?:[a-z0-9-]+\s+){0,3}limit\b`)
 
 var statusCodeRe = regexp.MustCompile(`(?i)status(?:\s*code)?[:\s]+(\d{3})\b`)
 
@@ -238,9 +248,9 @@ func classifyKind(err error) Kind {
 	if containsAny(msg,
 		"per_day", "per_month", "generaterequestsperday",
 		"resource_exhausted", "quota exceeded for metric", "exceeded your current quota",
-		"hit your usage limit", "hit your limit", "usage limit",
+		"hit your usage limit", "hit your limit", "usage limit", "[quota_exhausted]",
 		"insufficient credit", "insufficient_quota",
-	) {
+	) || claudeLimitSentenceRe.MatchString(msg) {
 		return KindQuotaExhausted
 	}
 

@@ -821,6 +821,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		if msg == "" {
 			msg = strings.TrimSpace(stderr.String())
 		}
+		if IsClaudeUsageLimitText(msg) {
+			return nil, NewClaudeUsageLimitError("claude-code", c.modelID, msg, time.Now())
+		}
 		return nil, fmt.Errorf("claude run reported an error result: %s", msg)
 	}
 	if totalUsage.TotalTokens == 0 {
