@@ -2775,7 +2775,7 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 
 	now := time.Now()
 	session, created, ok := claudeInteractivePersistentRegistry.GetOrCreate(ownerSessionID, func() *claudeInteractivePersistentSession {
-		sessionName := newTmuxSessionName()
+		sessionName := claudePersistentTmuxOwnerPrefix(ownerSessionID) + randomHex(8)
 		session := &claudeInteractivePersistentSession{
 			ownerSessionID:        ownerSessionID,
 			tmuxSessionName:       sessionName,
@@ -2833,6 +2833,10 @@ func (c *ClaudeCodeInteractiveAdapter) acquirePersistentInteractiveSession(ctx c
 		session.idleLease.Pause()
 		return session, false, nil
 	}
+
+	// The registry disappears on backend restart; tmux and its CLI do not.
+	// Reclaim only this chat before launching a replacement (PLAT-746-859).
+	closePreviousClaudeTmuxCopies(ctx, ownerSessionID)
 
 	args, tempFiles, err := c.buildClaudeArgs(opts, session.tmuxSessionName, nativeSessionID, systemPrompt)
 	if err != nil {
