@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/manishiitg/multi-llm-provider-go/pkg/tmuxinput"
 )
 
 // PLAT-746-859: losing the in-memory registry must not leave a second CLI for
@@ -40,19 +42,22 @@ func TestClaudeColdRegistryClosesOnlySameChatTmuxCopies(t *testing.T) {
 	// This server was created only for this test, never the user's tmux.
 	defer exec.Command("tmux", "kill-server").Run()
 	owner := "test-chat"
-	prefix := claudePersistentTmuxOwnerPrefix(owner)
-	other := claudePersistentTmuxOwnerPrefix("another-chat") + "live"
-	start := func(name string) int {
+	other := newTmuxSessionName()
+	start := func(name, taggedOwner string) int {
 		t.Helper()
-		run("new-session", "-d", "-s", name, "exec sleep 60")
+		// Direct argv avoids the verifier account's non-login default shell.
+		run("new-session", "-d", "-s", name, "/bin/sleep", "60")
+		if taggedOwner != "" {
+			run("set-option", "-t", "="+name, tmuxinput.OwnerSessionOption, taggedOwner)
+		}
 		pid, err := strconv.Atoi(run("list-panes", "-t", "="+name, "-F", "#{pane_pid}"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return pid
 	}
-	otherPID := start(other)
-	oldPIDs := []int{start(prefix + "first"), start(prefix + "second")}
+	otherPIDs := []int{start(other, "another-chat"), start(newTmuxSessionName(), ""), start("mlp-other-provider-live", owner)}
+	oldPIDs := []int{start(newTmuxSessionName(), owner), start(newTmuxSessionName(), owner)}
 	for i := 0; i < 2; i++ {
 		// No persistent registry entries exist, as after a backend restart.
 		closePreviousClaudeTmuxCopies(ctx, owner)
@@ -61,13 +66,15 @@ func TestClaudeColdRegistryClosesOnlySameChatTmuxCopies(t *testing.T) {
 				t.Fatalf("previous chat process %d survived cold acquisition", pid)
 			}
 		}
-		if err := syscall.Kill(otherPID, 0); err != nil {
-			t.Fatalf("another chat's process was stopped: %v", err)
+		for _, pid := range otherPIDs {
+			if err := syscall.Kill(pid, 0); err != nil {
+				t.Fatalf("unrelated process %d was stopped: %v", pid, err)
+			}
 		}
-		oldPIDs = []int{start(prefix + randomHex(8))}
+		oldPIDs = []int{start(newTmuxSessionName(), owner)}
 		names := strings.Fields(run("list-sessions", "-F", "#{session_name}"))
-		if len(names) != 2 {
-			t.Fatalf("reopen %d left %d sessions; want one per chat: %v", i, len(names), names)
+		if len(names) != 4 {
+			t.Fatalf("reopen %d left %d sessions; want one for the reopened chat and three unrelated: %v", i, len(names), names)
 		}
 	}
 }
