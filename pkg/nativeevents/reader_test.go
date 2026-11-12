@@ -2,6 +2,7 @@ package nativeevents
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,5 +107,26 @@ func TestNativeCursorPartialAndRebind(t *testing.T) {
 	}
 	if _, err := Read(context.Background(), "pi-cli", "selected-session", p, b.Next); err == nil {
 		t.Fatal("rewritten source was silently accepted")
+	}
+}
+
+// PLAT-746-899: a Codex command that finished after its turn ended was closed
+// from the rollout with an empty card, because the decoder dropped its output.
+func TestCodexCommandCompletionCarriesItsOutput(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "session.jsonl")
+	rows := `{"type":"event_msg","payload":{"type":"item_completed","item":{"type":"CommandExecution","id":"exec-1","exit_code":0,"aggregated_output":"VERIFY: PASSED\n"}}}
+`
+	if err := os.WriteFile(p, []byte(rows), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Read(context.Background(), "codex-cli", "session-test", p, Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Records) != 1 || b.Records[0].Name != "Command" || b.Records[0].Output != "VERIFY: PASSED\n" {
+		t.Fatalf("records=%+v", b.Records)
+	}
+	if data, _ := json.Marshal(b.Records[0]); strings.Contains(string(data), "VERIFY") {
+		t.Fatalf("command output must not be serialized: %s", data)
 	}
 }

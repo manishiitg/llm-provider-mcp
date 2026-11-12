@@ -24,6 +24,10 @@ type NativeRecord struct {
 	Model      string       `json:"model,omitempty"`
 	DurationMS int64        `json:"duration_ms,omitempty"`
 	Usage      *NativeUsage `json:"usage,omitempty"`
+	// Output is a finished command's output, used only to close that
+	// command's own tool card in its chat. It is never serialized, so saved
+	// activity, observer state and reports do not copy it.
+	Output string `json:"-"`
 }
 
 // NativeUsage keeps the producer's scope explicit. Cumulative observations

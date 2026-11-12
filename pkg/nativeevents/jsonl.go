@@ -265,6 +265,7 @@ func decodeCodex(b *Batch, session string, row map[string]any) {
 			}
 		case "commandexecution", "command_execution":
 			r.Kind, r.Name = "tool", "Command"
+			r.Output = text(item, "aggregated_output", "aggregatedOutput")
 			if number(item, "exit_code", "exitCode") != 0 {
 				r.State = "failed"
 			}
