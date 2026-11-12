@@ -103,3 +103,37 @@ func outside(paths []string, root string) []string {
 	}
 	return out
 }
+
+// mountedBlocks picks the blocked paths the launcher mounts over instead of
+// splitting a grant: an existing blocked path inside a read or write grant is
+// hidden, an existing blocked-write path inside a write grant is made
+// read-only. The rest (missing paths, paths outside every grant) are returned
+// for splitAroundBlocked: a missing blocked file cannot be mounted over, and
+// splitting its folder keeps it from being created there.
+func mountedBlocks(read, write, blockedRead, blockedWrite []string) (hidden, readOnly, splitRead, splitWrite []string) {
+	inside := func(path string, grants []string) bool {
+		for _, grant := range grants {
+			if path == grant || strings.HasPrefix(path, grant+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	present := func(path string) bool { _, err := os.Lstat(path); return err == nil }
+	all := append(append([]string{}, read...), write...)
+	for _, path := range blockedRead {
+		if present(path) && inside(path, all) {
+			hidden = append(hidden, path)
+		} else {
+			splitRead = append(splitRead, path)
+		}
+	}
+	for _, path := range blockedWrite {
+		if present(path) && inside(path, write) {
+			readOnly = append(readOnly, path)
+		} else {
+			splitWrite = append(splitWrite, path)
+		}
+	}
+	return hidden, readOnly, splitRead, splitWrite
+}

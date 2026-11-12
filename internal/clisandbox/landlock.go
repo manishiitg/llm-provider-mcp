@@ -29,6 +29,12 @@ type landlockPolicy struct {
 	ListPaths []string `json:"list_paths,omitempty"`
 	// Agy native shells require PTYs; only grant an isolated devpts instance.
 	PrivatePTS bool `json:"private_pts,omitempty"`
+	// HiddenPaths and ReadOnlyOverlays are blocked paths inside a grant that the
+	// launcher mounts over in the command's own namespaces (shell wrapping
+	// starts them): hidden ones can be neither read nor changed, read-only ones
+	// can be read but not changed.
+	HiddenPaths      []string `json:"hidden_paths,omitempty"`
+	ReadOnlyOverlays []string `json:"read_only_overlays,omitempty"`
 	// ShellWrap: every shell the CLI starts runs under Inner, without the CLI's logins (PLAT-872-84).
 	ShellWrap *landlockShellWrap `json:"shell_wrap,omitempty"`
 	// OwnLoginEnv is the only login variables the CLI keeps; the launcher removes every other login-like variable
@@ -263,20 +269,31 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	read = append(read, runtimeReadPaths...)
 	read = append(read, executableDirs(args)...)
 	write := append(LandlockWritePaths(policy, workingDir, runtimeWritePaths), credentials...)
-	// Blocked paths inside a grant (planning/, the raw database, AGENTS.md):
-	// Landlock cannot take them back, so the grants are split around them.
-	// The CLI's own working folder is never split: for Code it is the project,
-	// and splitting it would stop the CLI creating files there. Its blocked
-	// entries are the CLI's managed instruction files, which the bridge guards.
+	// Blocked paths inside a grant (planning/, the raw database, a Crew's
+	// settings/, AGENTS.md): Landlock cannot take them back. With the launcher's
+	// own namespaces an existing one is mounted over (hidden, or read-only for a
+	// blocked write) and the grant stays whole, so the CLI can still create files
+	// beside it (PLAT-746-924); a missing one, or any without those namespaces,
+	// splits the grant around it as before. The CLI's own working folder is never
+	// split: for Code it is the project, and splitting it would stop the CLI
+	// creating files there. Its blocked entries are the CLI's managed
+	// instruction files, which the bridge guards.
 	cwd := canonical(workingDir)
-	read, write = splitAroundBlocked(canonicalUnique(read), canonicalUnique(write),
-		outside(canonicalUnique(policy.BlockedPaths), cwd), outside(canonicalUnique(policy.BlockedWritePaths), cwd))
+	read, write = canonicalUnique(read), canonicalUnique(write)
+	blockedRead, blockedWrite := outside(canonicalUnique(policy.BlockedPaths), cwd), outside(canonicalUnique(policy.BlockedWritePaths), cwd)
+	var hidden, readOnly []string
+	if shellWrapEnabled {
+		hidden, readOnly, blockedRead, blockedWrite = mountedBlocks(read, write, blockedRead, blockedWrite)
+	}
+	read, write = splitAroundBlocked(read, write, blockedRead, blockedWrite)
 	config := landlockPolicy{
-		ReadPaths:  existing(canonicalUnique(read)),
-		WritePaths: existing(canonicalUnique(write)),
-		WorkDir:    canonical(workingDir),
-		ListPaths:  []string{"/"},
-		PrivatePTS: strings.TrimSpace(policy.Provider) == "agy-cli",
+		ReadPaths:        existing(canonicalUnique(read)),
+		WritePaths:       existing(canonicalUnique(write)),
+		WorkDir:          canonical(workingDir),
+		ListPaths:        []string{"/"},
+		PrivatePTS:       strings.TrimSpace(policy.Provider) == "agy-cli",
+		HiddenPaths:      hidden,
+		ReadOnlyOverlays: readOnly,
 	}
 	own := append([]string{}, policy.OwnLoginEnv...)
 	if len(own) == 0 {
