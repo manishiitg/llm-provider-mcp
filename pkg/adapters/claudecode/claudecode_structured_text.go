@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -13,6 +14,47 @@ type claudeStructuredText struct {
 	partial   bool
 	emitted   bool
 	completed strings.Builder
+	messageID string
+	blocks    map[string]*claudeTextBlock
+}
+
+type claudeTextBlock struct {
+	text     strings.Builder
+	complete bool
+}
+
+func (t *claudeStructuredText) blockID(message string, index int) string {
+	if message == "" {
+		return ""
+	}
+	return "claude:" + message + ":" + strconv.Itoa(index)
+}
+
+func (t *claudeStructuredText) startBlock(id string, emit func(llmtypes.StreamChunk)) {
+	if id == "" {
+		return
+	}
+	if t.blocks == nil {
+		t.blocks = make(map[string]*claudeTextBlock)
+	}
+	if t.blocks[id] != nil {
+		return
+	}
+	t.blocks[id] = &claudeTextBlock{}
+	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeAssistantBlock, Metadata: map[string]any{llmtypes.AssistantBlockIDMetadataKey: id, llmtypes.AssistantBlockPhaseMetadataKey: "start"}})
+}
+
+func (t *claudeStructuredText) endBlock(id, text string, emit func(llmtypes.StreamChunk)) {
+	if id == "" {
+		return
+	}
+	t.startBlock(id, emit)
+	block := t.blocks[id]
+	if block.complete {
+		return
+	}
+	block.complete = true
+	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeAssistantBlock, Content: text, Metadata: map[string]any{llmtypes.AssistantBlockIDMetadataKey: id, llmtypes.AssistantBlockPhaseMetadataKey: "end"}})
 }
 
 func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.StreamChunk)) {
@@ -23,21 +65,36 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 		}
 		if ev.Event.Type == "message_start" {
 			t.partial = false
+			t.messageID = ""
+			if ev.Event.Message != nil {
+				t.messageID = ev.Event.Message.ID
+			}
+		}
+		id := t.blockID(t.messageID, ev.Event.Index)
+		if ev.Event.Type == "content_block_start" && ev.Event.ContentBlock != nil && ev.Event.ContentBlock.Type == "text" {
+			t.startBlock(id, emit)
+		}
+		if ev.Event.Type == "content_block_stop" && t.blocks[id] != nil {
+			t.endBlock(id, t.blocks[id].text.String(), emit)
 		}
 		if ev.Event.Type != "content_block_delta" || ev.Event.Delta.Type != "text_delta" || ev.Event.Delta.Text == "" {
 			return
 		}
 		text := ev.Event.Delta.Text
+		t.startBlock(id, emit)
+		if t.blocks[id] != nil {
+			t.blocks[id].text.WriteString(text)
+		}
 		if !t.partial && t.emitted {
 			text = "\n\n" + text
 		}
 		t.partial, t.emitted = true, true
-		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text, Metadata: map[string]any{llmtypes.ContentDeltaMetadataKey: true}})
+		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text, Metadata: map[string]any{llmtypes.ContentDeltaMetadataKey: true, llmtypes.AssistantBlockIDMetadataKey: id}})
 	case "assistant":
 		if ev.Message == nil {
 			return
 		}
-		for _, block := range ev.Message.Content {
+		for index, block := range ev.Message.Content {
 			// PLAT-746-839: the SDK supplies completed thinking blocks separately
 			// from text. Forward them on the existing reasoning channel, never
 			// into the reply. Partial thinking deltas remain ignored here so the
@@ -48,6 +105,10 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 			}
 			if block.Type != "text" || block.Text == "" {
 				continue
+			}
+			id := t.blockID(ev.Message.ID, index)
+			if !t.partial {
+				t.startBlock(id, emit)
 			}
 			if t.completed.Len() > 0 {
 				t.completed.WriteString("\n\n")
@@ -61,7 +122,10 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 					text = "\n\n" + text
 				}
 				t.emitted = true
-				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text})
+				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeContent, Content: text, Metadata: map[string]any{llmtypes.AssistantBlockIDMetadataKey: id}})
+			}
+			if !t.partial {
+				t.endBlock(id, block.Text, emit)
 			}
 		}
 	}

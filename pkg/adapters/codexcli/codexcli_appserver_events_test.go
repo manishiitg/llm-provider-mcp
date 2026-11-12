@@ -64,3 +64,38 @@ func TestCodexAppServerFollowsUnconsumedSteerIntoNextTurn(t *testing.T) {
 		t.Fatalf("follow-up turn not followed: %q turn=%s", got, s.turnID)
 	}
 }
+
+func TestCodexNativeTextBlocksUseStartsAndCompletedSnapshots(t *testing.T) {
+	r := &codexRPC{events: make(chan codexRPCMessage, 8), done: make(chan struct{})}
+	for _, frame := range []struct{ method, body string }{
+		{"item/started", `"item":{"id":"a","type":"agentMessage"}`},
+		{"item/agentMessage/delta", `"itemId":"a","delta":"before "`},
+		{"item/agentMessage/delta", `"itemId":"a","delta":"finishes"`},
+		{"item/completed", `"item":{"id":"a","type":"agentMessage","phase":"commentary","text":"before finishes"}`},
+		{"item/started", `"item":{"id":"b","type":"agentMessage"}`},
+		{"item/agentMessage/delta", `"itemId":"b","delta":"after"`},
+		{"item/completed", `"item":{"id":"b","type":"agentMessage","phase":"final_answer","text":"after"}`},
+		{"turn/completed", `"turn":{"id":"turn","status":"completed"}`},
+	} {
+		r.events <- codexRPCMessage{Method: frame.method, Params: json.RawMessage(`{"threadId":"thread","turnId":"turn",` + frame.body + `}`)}
+	}
+	var blocks []llmtypes.StreamChunk
+	var text strings.Builder
+	_, err := (&CodexCLIAdapter{}).consumeAppTurn(context.Background(), &codexAppSession{}, r, "thread", "turn", func(c llmtypes.StreamChunk) {
+		if c.Type == llmtypes.StreamChunkTypeAssistantBlock {
+			blocks = append(blocks, c)
+		}
+		if c.Type == llmtypes.StreamChunkTypeContent {
+			text.WriteString(c.Content)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 4 || blocks[1].Content != "before finishes" || blocks[3].Content != "after" || blocks[0].Metadata[llmtypes.AssistantBlockIDMetadataKey] == blocks[2].Metadata[llmtypes.AssistantBlockIDMetadataKey] {
+		t.Fatalf("framing=%+v", blocks)
+	}
+	if text.String() != "before finishes\n\nafter" {
+		t.Fatalf("duplicated stream %q", text.String())
+	}
+}

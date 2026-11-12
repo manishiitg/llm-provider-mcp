@@ -125,3 +125,46 @@ func TestClaudeStructuredThinkingIsSeparateFromReplyAndNotDuplicatedByDeltas(t *
 		t.Fatal("thinking changed reply text")
 	}
 }
+
+// A steer can arrive during block A; only the native start of block B may
+// start a new UI row. The existing text stream/result must remain byte-exact.
+func TestClaudeNativeTextBlocksFrameWithoutRepeatingContent(t *testing.T) {
+	frames := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Before the "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"steer finishes."}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Before the steer finishes."}]}}`,
+		`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m2"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"After steer."}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"After steer."}]}}`,
+	}
+	var state claudeStructuredText
+	var controls []llmtypes.StreamChunk
+	var live strings.Builder
+	for _, frame := range frames {
+		var ev claudeStreamEvent
+		if err := json.Unmarshal([]byte(frame), &ev); err != nil {
+			t.Fatal(err)
+		}
+		state.observe(ev, func(c llmtypes.StreamChunk) {
+			if c.Type == llmtypes.StreamChunkTypeAssistantBlock {
+				controls = append(controls, c)
+			}
+			if c.Type == llmtypes.StreamChunkTypeContent {
+				live.WriteString(c.Content)
+			}
+		})
+	}
+	if len(controls) != 4 || controls[0].Metadata[llmtypes.AssistantBlockIDMetadataKey] != "claude:m1:0" || controls[2].Metadata[llmtypes.AssistantBlockIDMetadataKey] != "claude:m2:0" {
+		t.Fatalf("native boundaries = %+v", controls)
+	}
+	if controls[1].Content != "Before the steer finishes." || controls[3].Content != "After steer." {
+		t.Fatal("snapshot cut or repeated a block")
+	}
+	if live.String() != state.completed.String() || live.String() != "Before the steer finishes.\n\nAfter steer." {
+		t.Fatalf("text changed: %q", live.String())
+	}
+}

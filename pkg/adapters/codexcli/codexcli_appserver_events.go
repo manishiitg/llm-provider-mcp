@@ -31,6 +31,22 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	toolStarts := map[string]time.Time{}
 	streamed := map[string]bool{}
 	seenUserItems := map[string]bool{}
+	blocksStarted := map[string]bool{}
+	blocksCompleted := map[string]bool{}
+	blockID := func(id string) string {
+		if id == "" {
+			return ""
+		}
+		return "codex:" + thread + ":" + turn + ":" + id
+	}
+	startBlock := func(id string) {
+		id = blockID(id)
+		if id == "" || blocksStarted[id] {
+			return
+		}
+		blocksStarted[id] = true
+		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeAssistantBlock, Metadata: map[string]any{llmtypes.AssistantBlockIDMetadataKey: id, llmtypes.AssistantBlockPhaseMetadataKey: "start"}})
+	}
 	lastContentItem := ""
 	trailingNewlines := 0
 	emitContent := func(id, text string, metadata map[string]any) {
@@ -39,6 +55,8 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 		}
 		metadata[llmtypes.ContentDeltaMetadataKey] = true
 		metadata["codex_item_id"] = id
+		startBlock(id)
+		metadata[llmtypes.AssistantBlockIDMetadataKey] = blockID(id)
 		// Native messages are separate paragraphs. Token deltas within one
 		// message must stay byte-exact (PLAT-872-19 agentic streaming failure).
 		if lastContentItem != "" && lastContentItem != id && trailingNewlines < 2 {
@@ -210,12 +228,20 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					}
 					emit(llmtypes.ContextCompactionChunk(llmtypes.ContextCompaction{Provider: "codex-cli", ID: item.ID, Phase: phase, Outcome: outcome}))
 				}
+				if item.Type == "agentMessage" && msg.Method == "item/started" {
+					startBlock(item.ID)
+				}
 				if item.Type == "agentMessage" && msg.Method == "item/completed" {
 					if item.Phase == "final_answer" || item.Phase == "" {
 						final = item.Text
 					}
 					if !streamed[item.ID] {
 						emitContent(item.ID, item.Text, metadata)
+					}
+					id := blockID(item.ID)
+					if id != "" && !blocksCompleted[id] {
+						blocksCompleted[id] = true
+						emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeAssistantBlock, Content: item.Text, Metadata: map[string]any{llmtypes.AssistantBlockIDMetadataKey: id, llmtypes.AssistantBlockPhaseMetadataKey: "end"}})
 					}
 				}
 				if item.Type == "userMessage" && !seenUserItems[item.ID] {
