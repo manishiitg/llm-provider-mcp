@@ -49,8 +49,11 @@ type claudeStreamEvent struct {
 	Input        json.RawMessage `json:"input,omitempty"`
 	Suggestions  json.RawMessage `json:"suggestions,omitempty"`
 	Event        *struct {
-		Type  string `json:"type"`
-		Delta struct {
+		Type         string                    `json:"type"`
+		Index        int                       `json:"index"`
+		Message      *claudeStreamMessage      `json:"message,omitempty"`
+		ContentBlock *claudeStreamContentBlock `json:"content_block,omitempty"`
+		Delta        struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"delta"`
@@ -75,6 +78,7 @@ type claudeStreamEvent struct {
 }
 
 type claudeStreamMessage struct {
+	ID      string                     `json:"id,omitempty"`
 	Model   string                     `json:"model,omitempty"`
 	Content []claudeStreamContentBlock `json:"content,omitempty"`
 	Usage   *claudeStreamUsage         `json:"usage,omitempty"`

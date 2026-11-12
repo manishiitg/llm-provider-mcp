@@ -92,6 +92,10 @@ type StreamChunkType string
 
 const (
 	StreamChunkTypeContent StreamChunkType = "content" // Text content chunk
+	// AssistantBlock carries native text-block start/end framing, not a second
+	// content delta. Only transports with native identity emit it. End.Content
+	// is the exact completed block, for durable presentation, not model input.
+	StreamChunkTypeAssistantBlock StreamChunkType = "assistant_block"
 	// Reasoning is provider-supplied, user-visible reasoning/progress text. It
 	// is intentionally distinct from assistant content so product UIs can render
 	// it as a collapsible progress card without treating it as the final answer.

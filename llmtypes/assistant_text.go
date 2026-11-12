@@ -128,3 +128,8 @@ func StreamTerminalText(chunks []StreamChunk) string {
 	}
 	return b.String()
 }
+
+// Native assistant framing is separate from text aggregation. Unknown/empty
+// identities never opt a transport into block-level presentation.
+const AssistantBlockIDMetadataKey = "assistant_block_id"
+const AssistantBlockPhaseMetadataKey = "assistant_block_phase"
