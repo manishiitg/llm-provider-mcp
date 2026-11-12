@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -123,11 +124,15 @@ func (s *claudeSDKSession) interruptHelpers() {
 // SDKBackgroundUpdate is the full list of a chat's running background tasks.
 // Closed names why a kept session ended ("finished", "stopped", "idle",
 // "replaced"); the list is then empty. IdleLimit is the idle bound in use.
+// Wake: Claude started a turn on its own in the kept session (its background
+// work finished); the host shows it by starting a turn that adopts it
+// (llmtypes.WithCodingProviderAdoptWake) or closes the session.
 type SDKBackgroundUpdate struct {
 	Owner     string
 	Tasks     []SDKBackgroundTask
 	Closed    string
 	IdleLimit time.Duration
+	Wake      bool
 }
 
 var claudeSDKBackgroundListener atomic.Pointer[func(SDKBackgroundUpdate)]
@@ -339,7 +344,20 @@ type claudeSDKSession struct {
 	idle      *time.Timer
 	drainStop chan struct{}
 	drainDone chan struct{}
+	// wakeGrace closes a session whose tasks all finished if Claude does not
+	// start its own turn soon; wakeFirst is the first line of that turn, held
+	// for the turn that adopts it.
+	wakeGrace *time.Timer
+	wakeFirst string
+	// wakeDismissed: the chat does not show Claude's current own turn; its
+	// output is read and dropped until its result.
+	wakeDismissed bool
 }
+
+// claudeSDKWakeGrace is how long a kept session whose background work all
+// finished waits for Claude's own turn. Claude starts it within a second or
+// two of the task notification.
+var claudeSDKWakeGrace = 30 * time.Second
 
 // startClaudeSDKSession starts the bridge. cleanup runs once the process has exited.
 func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader, stderr *claudeLockedBuffer, kill context.CancelFunc, cleanup func(), logger interfaces.Logger) (*claudeSDKSession, error) {
@@ -435,10 +453,11 @@ func (s *claudeSDKSession) park() {
 	go s.drain()
 }
 
-// drain reads the kept session's output while no turn owns it. A model turn the
-// SDK runs on its own (for example after a task notification) is logged and
-// dropped from the chat; a permission request is refused because nobody is
-// there to answer it; an empty task list closes the session.
+// drain reads the kept session's output while no turn owns it. When Claude
+// starts a turn on its own (after a task notification) draining pauses at its
+// first line and the host is told, so a chat turn can adopt it (PLAT-746-899);
+// a permission request is refused because nobody is there to answer it; an
+// empty task list closes the session unless Claude wakes within the grace.
 func (s *claudeSDKSession) drain() {
 	s.mu.Lock()
 	stop, done := s.drainStop, s.drainDone
@@ -453,19 +472,26 @@ func (s *claudeSDKSession) drain() {
 				s.interruptHelpers()
 				return // all task bookends have now been consumed
 			}
-			s.handleKeptLine(line)
+			if s.handleKeptLine(line) {
+				return
+			}
 		}
 	}
 }
 
-func (s *claudeSDKSession) handleKeptLine(line string) {
+// handleKeptLine reports true when Claude started its own turn; the line is
+// then held as wakeFirst and draining stops.
+func (s *claudeSDKSession) handleKeptLine(line string) bool {
 	line = strings.TrimSpace(line)
 	if line == "" || line[0] != '{' {
-		return
+		return false
 	}
 	var ev claudeStreamEvent
 	if json.Unmarshal([]byte(line), &ev) != nil {
-		return
+		return false
+	}
+	if ev.SDKParkedTurn && (ev.Type == "assistant" || ev.Type == "stream_event") && s.holdWake(line) {
+		return true
 	}
 	switch ev.Type {
 	case "sdk_helper":
@@ -476,18 +502,52 @@ func (s *claudeSDKSession) handleKeptLine(line string) {
 		tasks := claudeSDKTasksFromWire(ev.Background)
 		s.setTasks(tasks)
 		if len(tasks) == 0 {
-			go s.closeIfParked("finished", "stopped", "tasks_finished")
+			s.armWakeGrace()
 		}
 	case "sdk_permission":
 		s.logf("[SDK_BACKGROUND] refused tool request between turns session=%s tool=%s", s.owner, ev.ToolName)
 		_ = s.input.write(map[string]any{"type": "permission", "id": ev.RequestID, "response": map[string]any{"behavior": "deny", "message": "Nobody is in this chat turn to answer. Ask again in chat."}})
 	case "result":
+		if ev.SDKParkedTurn {
+			s.mu.Lock()
+			s.wakeDismissed = false
+			s.mu.Unlock()
+		}
 		output := 0
 		if ev.Usage != nil {
 			output = ev.Usage.OutputTokens
 		}
 		s.logf("[SDK_BACKGROUND] dropped a model turn between chat turns session=%s output_tokens=%d is_error=%t", s.owner, output, ev.IsError)
 	}
+	return false
+}
+
+// armWakeGrace closes the session if Claude does not start its own turn
+// within claudeSDKWakeGrace of its last task finishing.
+func (s *claudeSDKSession) armWakeGrace() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wakeGrace == nil && s.wakeFirst == "" {
+		s.wakeGrace = time.AfterFunc(claudeSDKWakeGrace, func() { s.closeIfParked("finished", "stopped", "tasks_finished") })
+	}
+}
+
+// holdWake keeps the first line of Claude's own turn and tells the host.
+func (s *claudeSDKSession) holdWake(line string) bool {
+	s.mu.Lock()
+	if !s.parked || s.closing || s.wakeDismissed {
+		s.mu.Unlock()
+		return false
+	}
+	s.wakeFirst = line
+	if s.wakeGrace != nil {
+		s.wakeGrace.Stop()
+		s.wakeGrace = nil
+	}
+	s.mu.Unlock()
+	s.logf("[SDK_BACKGROUND] wake session=%s: Claude started a turn on its own", s.owner)
+	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Wake: true})
+	return true
 }
 
 func (s *claudeSDKSession) unregister() {
@@ -511,6 +571,12 @@ func (s *claudeSDKSession) closeIfParked(closed, verb, reason string) bool {
 	if s.idle != nil {
 		s.idle.Stop()
 	}
+	if s.wakeGrace != nil {
+		s.wakeGrace.Stop()
+	}
+	// Draining paused at Claude's own turn; read the rest so the process can end.
+	paused := s.wakeFirst != ""
+	s.wakeFirst = ""
 	tasks := len(s.tasks)
 	s.tasks = nil
 	s.mu.Unlock()
@@ -518,6 +584,14 @@ func (s *claudeSDKSession) closeIfParked(closed, verb, reason string) bool {
 	s.logf("[SDK_BACKGROUND] %s session=%s tasks=%d reason=%s", verb, s.owner, tasks, reason)
 	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Closed: closed})
 	s.shutdown()
+	if paused {
+		go func() {
+			for line := range s.reader.lines {
+				s.handleKeptLine(line)
+			}
+			s.interruptHelpers()
+		}()
+	}
 	return true
 }
 
@@ -581,19 +655,114 @@ func takeKeptClaudeSDKSession(owner string, launch claudeSDKLaunch, resumeSessio
 		s.closeIfParked("replaced", "stopped", reason)
 		return nil
 	}
+	tasks := s.unparkLocked()
+	s.mu.Unlock()
+	s.stopDrain()
+	s.logf("[SDK_BACKGROUND] reused session=%s tasks=%d", owner, tasks)
+	return s
+}
+
+// unparkLocked hands the parked session to a turn. A turn that is not the
+// adopting one drops a held wake: the bridge keeps Claude's own turn apart from
+// the person's prompt, and Claude's conversation keeps what it said.
+func (s *claudeSDKSession) unparkLocked() int {
 	s.parked = false
+	s.wakeFirst = ""
 	if s.idle != nil {
 		s.idle.Stop()
 	}
+	if s.wakeGrace != nil {
+		s.wakeGrace.Stop()
+		s.wakeGrace = nil
+	}
+	return len(s.tasks)
+}
+
+func (s *claudeSDKSession) stopDrain() {
+	s.mu.Lock()
 	stop, done := s.drainStop, s.drainDone
-	tasks := len(s.tasks)
+	s.drainStop = nil
 	s.mu.Unlock()
 	if stop != nil {
 		close(stop)
 		<-done
 	}
-	s.logf("[SDK_BACKGROUND] reused session=%s tasks=%d", owner, tasks)
-	return s
+}
+
+// ErrClaudeWakeGone: the turn Claude started on its own was no longer waiting
+// (the session closed, or a person's message took it first).
+var ErrClaudeWakeGone = errors.New("claude-code: Claude's own follow-up turn is no longer waiting")
+
+// takeClaudeSDKWake hands a chat's kept session to the turn that adopts the
+// turn Claude started on its own, with that turn's first line. The launch is
+// not compared: the turn is Claude's, already running in this process.
+func takeClaudeSDKWake(owner string) (*claudeSDKSession, string) {
+	claudeSDKKept.Lock()
+	s := claudeSDKKept.sessions[owner]
+	if s != nil {
+		s.mu.Lock()
+		ready := s.parked && !s.closing && s.wakeFirst != "" && !s.hasExited()
+		s.mu.Unlock()
+		if !ready {
+			s = nil
+		} else {
+			delete(claudeSDKKept.sessions, owner)
+		}
+	}
+	claudeSDKKept.Unlock()
+	if s == nil {
+		return nil, ""
+	}
+	s.mu.Lock()
+	first := s.wakeFirst
+	tasks := s.unparkLocked()
+	s.mu.Unlock()
+	s.stopDrain()
+	s.logf("[SDK_BACKGROUND] adopted wake session=%s tasks=%d", owner, tasks)
+	return s, first
+}
+
+// DismissClaudeSDKWake: the chat does not show the turn Claude started on its
+// own (the person pressed Stop, another turn holds the chat, or the follow-up
+// limit). A session still running Claude's tasks keeps them and reads that turn
+// without showing it; a session with none left closes.
+func DismissClaudeSDKWake(owner, reason string) {
+	claudeSDKKept.Lock()
+	s := claudeSDKKept.sessions[strings.TrimSpace(owner)]
+	claudeSDKKept.Unlock()
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	if !s.parked || s.closing || s.wakeFirst == "" {
+		s.mu.Unlock()
+		return
+	}
+	if len(s.tasks) == 0 {
+		s.mu.Unlock()
+		s.closeIfParked("stopped", "stopped", reason)
+		return
+	}
+	s.wakeFirst, s.wakeDismissed = "", true
+	s.drainStop, s.drainDone = make(chan struct{}), make(chan struct{})
+	tasks := len(s.tasks)
+	s.mu.Unlock()
+	s.logf("[SDK_BACKGROUND] wake not shown session=%s tasks=%d reason=%s", s.owner, tasks, reason)
+	go s.drain()
+}
+
+// ClaudeSDKWakePending reports whether Claude started a turn on its own in this
+// chat's kept session and it is waiting to be shown.
+func ClaudeSDKWakePending(owner string) bool {
+	claudeSDKKept.Lock()
+	s := claudeSDKKept.sessions[strings.TrimSpace(owner)]
+	claudeSDKKept.Unlock()
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.parked && !s.closing && s.wakeFirst != ""
 }
 
 // closeKeptClaudeSDKSession closes a chat's kept session, stopping its tasks.
