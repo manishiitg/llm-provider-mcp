@@ -61,15 +61,21 @@ func TestClaudeSDKBackgroundCommandLabelHidesInlineValues(t *testing.T) {
 // instead of taking the turn. A fake bridge stands in for the SDK.
 func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	var mu sync.Mutex
-	var closed []string
+	var closed, woke []string
 	SetSDKBackgroundListener(func(u SDKBackgroundUpdate) {
 		mu.Lock()
 		defer mu.Unlock()
 		if u.Closed != "" {
 			closed = append(closed, u.Owner+":"+u.Closed)
 		}
+		if u.Wake {
+			woke = append(woke, u.Owner)
+		}
 	})
 	defer SetSDKBackgroundListener(nil)
+	grace := claudeSDKWakeGrace
+	claudeSDKWakeGrace = 300 * time.Millisecond
+	defer func() { claudeSDKWakeGrace = grace }()
 
 	// The fake bridge runs its opening (for example: wait for a trigger line,
 	// then report an empty task list), then exits on stop_background like the
@@ -108,6 +114,25 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	}
 	waitExit(finished)
 
+	// PLAT-746-899: Claude starts its own turn when its last task finishes. That turn was
+	// dropped and the session closed under it; now the session waits and holds the turn
+	// for the chat turn that adopts it.
+	wake := start("chat-wake", `read trigger; echo '{"type":"sdk_background","background":[]}'; echo '{"type":"assistant","sdk_parked_turn":true,"message":{"content":[{"type":"text","text":"It finished"}]}}';`)
+	if err := wake.input.write(map[string]any{"type": "go"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !ClaudeSDKWakePending("chat-wake") && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(2 * claudeSDKWakeGrace) // past the grace: a waiting wake keeps the session
+	adopted, first := takeClaudeSDKWake("chat-wake")
+	if adopted != wake || !strings.Contains(first, "It finished") {
+		t.Fatalf("Claude's own turn was not held for adoption: session=%v first=%q", adopted != nil, first)
+	}
+	wake.kill()
+	waitExit(wake)
+
 	replaced := start("chat-replaced", "")
 	if s := takeKeptClaudeSDKSession("chat-replaced", claudeSDKLaunch{"model": {8}}, "native-1"); s != nil {
 		t.Fatal("a kept session with another launch must not take the turn")
@@ -126,6 +151,9 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	defer mu.Unlock()
 	if got := strings.Join(closed, ","); got != "chat-finished:finished,chat-replaced:replaced,chat-kept:finished" {
 		t.Fatalf("closed updates = %q", got)
+	}
+	if got := strings.Join(woke, ","); got != "chat-wake" {
+		t.Fatalf("wake updates = %q", got)
 	}
 }
 

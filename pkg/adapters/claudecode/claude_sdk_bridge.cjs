@@ -109,7 +109,8 @@ async function main() {
   // Kept session (PLAT-872): a turn ends at its answer, but while Claude's own background tasks still run the
   // session stays open ("parked") so they keep running; the next turn's prompt goes into this same session.
   // turnActive: a host turn owns the output. Output while no turn is active (a model turn the SDK starts on its own,
-  // for example after a task notification) is tagged sdk_parked_turn; the host logs and drops it.
+  // for example after a task notification) is tagged sdk_parked_turn until the host adopts it ("adopt"): Claude
+  // wakes itself when its background work finishes, and that turn is shown in the chat (PLAT-746-899).
   // strayCheck: the prompt went into a kept session while such a model turn was running, so output is ours only
   // once the SDK says it consumed our prompt (its uuid).
   let turnActive = false, parked = false, parkedTurnRunning = false, strayCheck = false, promptUUID, promptConsumed = true, lastBackground = '[]';
@@ -147,6 +148,12 @@ async function main() {
           strayCheck = parked && parkedTurnRunning;
           parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
           input.push({ text: request.text, uuid }); wake?.(); resolve();
+        }
+        else if (request.type === 'adopt') {
+          // The host takes the model turn Claude started on its own: from here its output is the host's turn, and
+          // its result ends that turn as usual. One that already ended is reported so the host ends its turn too.
+          if (parked && parkedTurnRunning) { parked = false; turnActive = true; strayCheck = false; promptConsumed = true; }
+          else emit({ type: 'sdk_adopt_idle' });
         }
         else if (request.type === 'steer') {
           // A kept session between turns takes no steer: the host starts a normal turn instead.

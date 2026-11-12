@@ -344,10 +344,19 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// A chat's SDK session may be kept after the turn while Claude's own
 	// background tasks run (PLAT-872); see claudecode_sdk_session.go.
 	keepAllowed := false
+	// adoptWake: this turn shows the turn Claude started on its own in the kept
+	// session (its background work finished); it sends no message (PLAT-746-899).
+	adoptWake := llmtypes.CodingProviderAdoptWakeFromContext(ctx) && c.sdkTransport && !idleCompact
+	wakeFirst := ""
+	if adoptWake {
+		if sess, wakeFirst = takeClaudeSDKWake(owner); sess == nil {
+			return nil, ErrClaudeWakeGone
+		}
+	}
 	if c.sdkTransport {
 		launch := claudeSDKLaunchParts(c.modelID, systemPrompt, strings.TrimPrefix(launchPrompt, systemPrompt), permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
 		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts) && !idleCompact
-		if owner != "" && !idleCompact {
+		if owner != "" && !idleCompact && sess == nil {
 			sess = takeKeptClaudeSDKSession(owner, launch, resumeSessionID)
 		}
 		if sess != nil {
@@ -434,7 +443,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			claudeSDKProcesses.Set(owner, sdkProcess)
 			defer claudeSDKProcesses.DeleteIf(owner, sdkProcess)
 		}
-		if err := sdkProcess.write(map[string]any{"type": "prompt", "text": prompt}); err != nil {
+		request := map[string]any{"type": "prompt", "text": prompt}
+		if adoptWake {
+			request = map[string]any{"type": "adopt"}
+		}
+		if err := sdkProcess.write(request); err != nil {
 			sess.kill()
 			<-sess.exited
 			return nil, fmt.Errorf("Claude SDK input: %w", err)
@@ -539,17 +552,22 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 	go func() {
 		defer close(scannerDone)
+		pendingWake := wakeFirst
 		for {
 			var raw string
-			select {
-			case next, ok := <-lines:
-				if !ok {
+			if pendingWake != "" {
+				raw, pendingWake = pendingWake, ""
+			} else {
+				select {
+				case next, ok := <-lines:
+					if !ok {
+						return
+					}
+					raw = next
+				case <-releaseCh:
+					released = true
 					return
 				}
-				raw = next
-			case <-releaseCh:
-				released = true
-				return
 			}
 			line := strings.TrimSpace(raw)
 			if line == "" || line[0] != '{' {
@@ -559,7 +577,14 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			if jErr := json.Unmarshal([]byte(line), &ev); jErr != nil {
 				continue
 			}
-			if ev.SDKParkedTurn {
+			if ev.SDKParkedTurn && adoptWake && ev.Type == "result" {
+				// Claude's own turn ended before the bridge took the adopt: it is still this turn's
+				// answer. The bridge stays parked, so keep the session for running tasks or end it.
+				ev.SDKParked = sess.taskCount() > 0
+				if !ev.SDKParked {
+					_ = sess.input.write(map[string]any{"type": "stop_background", "id": randomHex(12)})
+				}
+			} else if ev.SDKParkedTurn && !adoptWake {
 				// Output of a model turn the SDK ran on its own in a kept session, not this turn's.
 				if ev.Type == "result" && c.logger != nil {
 					c.logger.Infof("[SDK_BACKGROUND] dropped a model turn that was not this chat turn session=%s", owner)

@@ -72,3 +72,48 @@ export function query({ prompt }) {
   assert.equal(result.sdk_continues, false);
   assert.notEqual(result.sdk_parked_turn, true);
 });
+
+test('PLAT-746-899 Claude wakes itself after its background command; the host adopts that turn', { timeout: 5000 }, async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'sdk-wake-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  // The official SDK starts a turn on its own when a background task finishes (seen live 12 Nov).
+  writeFileSync(join(folder, 'sdk.mjs'), `
+export function query({ prompt }) {
+  const iterator = (async function* () {
+    const first = await prompt.next();
+    yield { type: 'system', subtype: 'init', session_id: 'native-test' };
+    yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'bg-tool', name: 'Bash', input: { command: 'sleep 25', run_in_background: true } }] } };
+    yield { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'bg', run_id: '1', tool_use_id: 'bg-tool' }] };
+    yield { type: 'result', result: 'Started it', user_message_uuids: [first.value.uuid] };
+    yield { type: 'system', subtype: 'task_notification', task_id: 'bg', run_id: '1', status: 'completed' };
+    yield { type: 'system', subtype: 'background_tasks_changed', tasks: [] };
+    yield { type: 'assistant', message: { content: [{ type: 'text', text: 'Its output was DONE' }] } };
+    await new Promise(resolve => setTimeout(resolve, 200));
+    yield { type: 'result', result: 'Its output was DONE' };
+  })();
+  iterator.close = () => {};
+  return iterator;
+}`);
+  const child = spawn(process.execPath, [join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AGENTWORKS_CLI_LAUNCH: '' } });
+  t.after(() => child.kill());
+  const events = []; let pending = '', stderr = '';
+  child.stderr.on('data', data => stderr += data);
+  child.stdout.on('data', data => {
+    pending += data;
+    while (pending.includes('\n')) {
+      const end = pending.indexOf('\n'), line = pending.slice(0, end); pending = pending.slice(end + 1);
+      const event = JSON.parse(line); events.push(event);
+      // The host sees Claude's own turn start and adopts it, as the Go session does.
+      if (event.type === 'assistant' && event.sdk_parked_turn) child.stdin.write(JSON.stringify({ type: 'adopt' }) + '\n');
+    }
+  });
+  const finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
+  child.stdin.write(JSON.stringify({ type: 'prompt', text: 'Run sleep 25 in the background' }) + '\n');
+  await finished;
+  const results = events.filter(event => event.type === 'result');
+  assert.equal(results[0].sdk_parked, true);
+  // Adopted: the wake's result is the host's turn (not dropped as a parked turn), and with no task left the session ends.
+  assert.equal(results.at(-1).result, 'Its output was DONE');
+  assert.notEqual(results.at(-1).sdk_parked_turn, true);
+  assert.equal(results.at(-1).sdk_parked, undefined);
+});
