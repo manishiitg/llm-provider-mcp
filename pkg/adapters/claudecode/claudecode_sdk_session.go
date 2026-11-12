@@ -348,6 +348,7 @@ type claudeSDKSession struct {
 	// start its own turn soon; wakeFirst is the first line of that turn, held
 	// for the turn that adopts it.
 	wakeGrace *time.Timer
+	wakeHold  *time.Timer
 	wakeFirst string
 	// wakeDismissed: the chat does not show Claude's current own turn; its
 	// output is read and dropped until its result.
@@ -358,6 +359,11 @@ type claudeSDKSession struct {
 // finished waits for Claude's own turn. Claude starts it within a second or
 // two of the task notification.
 var claudeSDKWakeGrace = 30 * time.Second
+
+// claudeSDKWakeHoldLimit bounds how long a held wake waits for its turn: a
+// lost adopt, a crash or a stuck chat must never leave the session paused with
+// nobody reading it.
+var claudeSDKWakeHoldLimit = 60 * time.Second
 
 // startClaudeSDKSession starts the bridge. cleanup runs once the process has exited.
 func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader, stderr *claudeLockedBuffer, kill context.CancelFunc, cleanup func(), logger interfaces.Logger) (*claudeSDKSession, error) {
@@ -544,6 +550,7 @@ func (s *claudeSDKSession) holdWake(line string) bool {
 		s.wakeGrace.Stop()
 		s.wakeGrace = nil
 	}
+	s.wakeHold = time.AfterFunc(claudeSDKWakeHoldLimit, func() { s.dismissWake("wake_not_adopted") })
 	s.mu.Unlock()
 	s.logf("[SDK_BACKGROUND] wake session=%s: Claude started a turn on its own", s.owner)
 	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Wake: true})
@@ -577,6 +584,7 @@ func (s *claudeSDKSession) closeIfParked(closed, verb, reason string) bool {
 	// Draining paused at Claude's own turn; read the rest so the process can end.
 	paused := s.wakeFirst != ""
 	s.wakeFirst = ""
+	s.stopWakeHoldLocked()
 	tasks := len(s.tasks)
 	s.tasks = nil
 	s.mu.Unlock()
@@ -668,6 +676,7 @@ func takeKeptClaudeSDKSession(owner string, launch claudeSDKLaunch, resumeSessio
 func (s *claudeSDKSession) unparkLocked() int {
 	s.parked = false
 	s.wakeFirst = ""
+	s.stopWakeHoldLocked()
 	if s.idle != nil {
 		s.idle.Stop()
 	}
@@ -730,9 +739,19 @@ func DismissClaudeSDKWake(owner, reason string) {
 	claudeSDKKept.Lock()
 	s := claudeSDKKept.sessions[strings.TrimSpace(owner)]
 	claudeSDKKept.Unlock()
-	if s == nil {
-		return
+	if s != nil {
+		s.dismissWake(reason)
 	}
+}
+
+func (s *claudeSDKSession) stopWakeHoldLocked() {
+	if s.wakeHold != nil {
+		s.wakeHold.Stop()
+		s.wakeHold = nil
+	}
+}
+
+func (s *claudeSDKSession) dismissWake(reason string) {
 	s.mu.Lock()
 	if !s.parked || s.closing || s.wakeFirst == "" {
 		s.mu.Unlock()
@@ -744,6 +763,7 @@ func DismissClaudeSDKWake(owner, reason string) {
 		return
 	}
 	s.wakeFirst, s.wakeDismissed = "", true
+	s.stopWakeHoldLocked()
 	s.drainStop, s.drainDone = make(chan struct{}), make(chan struct{})
 	tasks := len(s.tasks)
 	s.mu.Unlock()

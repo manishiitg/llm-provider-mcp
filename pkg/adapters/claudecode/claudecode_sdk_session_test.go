@@ -73,9 +73,9 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 		}
 	})
 	defer SetSDKBackgroundListener(nil)
-	grace := claudeSDKWakeGrace
-	claudeSDKWakeGrace = 300 * time.Millisecond
-	defer func() { claudeSDKWakeGrace = grace }()
+	grace, hold := claudeSDKWakeGrace, claudeSDKWakeHoldLimit
+	claudeSDKWakeGrace, claudeSDKWakeHoldLimit = 300*time.Millisecond, 2*time.Second
+	defer func() { claudeSDKWakeGrace, claudeSDKWakeHoldLimit = grace, hold }()
 
 	// The fake bridge runs its opening (for example: wait for a trigger line,
 	// then report an empty task list), then exits on stop_background like the
@@ -147,12 +147,20 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	kept.kill()
 	waitExit(kept)
 
+	// A held wake nobody adopts (lost adopt, crash, stuck chat) is let go after the hold
+	// limit, never left paused with nobody reading; with no tasks left the session ends.
+	lost := start("chat-wake-lost", `read trigger; echo '{"type":"sdk_background","background":[]}'; echo '{"type":"assistant","sdk_parked_turn":true,"message":{"content":[]}}';`)
+	if err := lost.input.write(map[string]any{"type": "go"}); err != nil {
+		t.Fatal(err)
+	}
+	waitExit(lost)
+
 	mu.Lock()
 	defer mu.Unlock()
-	if got := strings.Join(closed, ","); got != "chat-finished:finished,chat-replaced:replaced,chat-kept:finished" {
+	if got := strings.Join(closed, ","); got != "chat-finished:finished,chat-replaced:replaced,chat-kept:finished,chat-wake-lost:stopped" {
 		t.Fatalf("closed updates = %q", got)
 	}
-	if got := strings.Join(woke, ","); got != "chat-wake" {
+	if got := strings.Join(woke, ","); got != "chat-wake,chat-wake-lost" {
 		t.Fatalf("wake updates = %q", got)
 	}
 }
