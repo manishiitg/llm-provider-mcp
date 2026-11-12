@@ -445,6 +445,7 @@ func (s *claudeSDKSession) park() {
 	s.mu.Lock()
 	s.parked = true
 	s.drainStop, s.drainDone = make(chan struct{}), make(chan struct{})
+	stop, done := s.drainStop, s.drainDone
 	s.idle = time.AfterFunc(idle, func() { s.closeIfParked("idle", "expired", fmt.Sprintf("idle %s", idle)) })
 	tasks := len(s.tasks)
 	s.mu.Unlock()
@@ -456,7 +457,7 @@ func (s *claudeSDKSession) park() {
 		previous.closeIfParked("replaced", "stopped", "another session kept for this chat")
 	}
 	s.logf("[SDK_BACKGROUND] kept session=%s tasks=%d reason=own_background_tasks_running idle_limit=%s", s.owner, tasks, idle)
-	go s.drain()
+	go s.drain(stop, done)
 }
 
 // drain reads the kept session's output while no turn owns it. When Claude
@@ -464,10 +465,9 @@ func (s *claudeSDKSession) park() {
 // first line and the host is told, so a chat turn can adopt it (PLAT-746-899);
 // a permission request is refused because nobody is there to answer it; an
 // empty task list closes the session unless Claude wakes within the grace.
-func (s *claudeSDKSession) drain() {
-	s.mu.Lock()
-	stop, done := s.drainStop, s.drainDone
-	s.mu.Unlock()
+// It gets its channels from the caller: a turn may take the session (and clear
+// them) before this goroutine runs.
+func (s *claudeSDKSession) drain(stop <-chan struct{}, done chan struct{}) {
 	defer close(done)
 	for {
 		select {
@@ -765,10 +765,11 @@ func (s *claudeSDKSession) dismissWake(reason string) {
 	s.wakeFirst, s.wakeDismissed = "", true
 	s.stopWakeHoldLocked()
 	s.drainStop, s.drainDone = make(chan struct{}), make(chan struct{})
+	stop, done := s.drainStop, s.drainDone
 	tasks := len(s.tasks)
 	s.mu.Unlock()
 	s.logf("[SDK_BACKGROUND] wake not shown session=%s tasks=%d reason=%s", s.owner, tasks, reason)
-	go s.drain()
+	go s.drain(stop, done)
 }
 
 // ClaudeSDKWakePending reports whether Claude started a turn on its own in this
