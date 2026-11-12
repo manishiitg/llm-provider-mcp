@@ -135,5 +135,18 @@ func mountedBlocks(read, write, blockedRead, blockedWrite []string) (hidden, rea
 			splitWrite = append(splitWrite, path)
 		}
 	}
-	return hidden, readOnly, splitRead, splitWrite
+	// A missing path inside a mounted one needs nothing more: nothing can be
+	// created under a read-only or hidden mount (a Crew's settings/ covers its
+	// records that do not exist yet).
+	covered := func(path string) bool { return inside(path, hidden) || inside(path, readOnly) }
+	keep := func(paths []string) []string {
+		out := paths[:0:0]
+		for _, path := range paths {
+			if !covered(path) {
+				out = append(out, path)
+			}
+		}
+		return out
+	}
+	return hidden, readOnly, keep(splitRead), keep(splitWrite)
 }

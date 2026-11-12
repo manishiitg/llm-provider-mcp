@@ -80,7 +80,7 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 		PrivateHome: filepath.Join(root, "home"), CredentialHome: root,
 		WorkspaceWritePaths: []string{wf, other},
 		BlockedPaths:        []string{filepath.Join(wf, "db", "db.sqlite"), filepath.Join(other, "db.sqlite-wal")},
-		BlockedWritePaths:   []string{filepath.Join(wf, "planning"), filepath.Join(workDir, "settings"), filepath.Join(workDir, "CLAUDE.md")},
+		BlockedWritePaths:   []string{filepath.Join(wf, "planning"), filepath.Join(workDir, "settings"), filepath.Join(workDir, "settings", "webhooks.json"), filepath.Join(workDir, "CLAUDE.md")},
 	}
 	run := func(script string) error {
 		args, cleanup, err := LandlockArgs(policy, []string{"/bin/sh", "-c", script}, workDir, nil, nil)
