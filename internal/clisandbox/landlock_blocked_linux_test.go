@@ -19,6 +19,9 @@ import (
 func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 	runner := os.Getenv("CODING_TEST_LANDLOCK_RUNNER")
 	if runner == "" {
+		runner = os.Getenv("AGENTWORKS_LANDLOCK_RUNNER") // the app's remote verify builds and names it
+	}
+	if runner == "" {
 		t.Skip("CODING_TEST_LANDLOCK_RUNNER is not set")
 	}
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -49,7 +52,7 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 		Mode: llmtypes.CLISecurityModeIsolated, Provider: "claude-code", LandlockRunner: runner,
 		PrivateHome: filepath.Join(root, "home"), CredentialHome: root,
 		WorkspaceWritePaths: []string{wf},
-		BlockedPaths:        []string{filepath.Join(wf, "db", "db.sqlite")},
+		BlockedPaths:        []string{filepath.Join(wf, "db", "db.sqlite"), filepath.Join(wf, "db", "db.sqlite-wal")},
 		BlockedWritePaths:   []string{filepath.Join(wf, "planning"), filepath.Join(workDir, "CLAUDE.md")},
 	}
 	run := func(script string) error {
@@ -66,6 +69,8 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 		"edit db notes":      "echo y >> " + filepath.Join(wf, "db", "notes.md"),
 		"read planning":      "cat " + filepath.Join(wf, "planning", "plan.json"),
 		"write the work dir": "echo y > " + filepath.Join(workDir, "ok.txt"),
+		// PLAT-746-924: the existing blocked paths are mounted over, so the folder holding them keeps working.
+		"new file in the workflow root": "echo y > " + filepath.Join(wf, "new.txt"),
 	}
 	for name, script := range allowed {
 		if err := run(script); err != nil {
@@ -77,9 +82,8 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 		"new file in planning": "echo y > " + filepath.Join(wf, "planning", "x.json"),
 		"read the database":    "cat " + filepath.Join(wf, "db", "db.sqlite"),
 		"write the database":   "echo y >> " + filepath.Join(wf, "db", "db.sqlite"),
-		// Accepted limit (PLAT-385): no new entry directly in a split folder.
-		"new file in the workflow root": "echo y > " + filepath.Join(wf, "new.txt"),
-		"create a wal file":             "echo y > " + filepath.Join(wf, "db", "db.sqlite-wal"),
+		// A missing blocked file splits its folder instead: no planted sidecar beside the database.
+		"create a wal file": "echo y > " + filepath.Join(wf, "db", "db.sqlite-wal"),
 	}
 	for name, script := range refused {
 		if err := run(script); err == nil {
