@@ -24,7 +24,21 @@ func TestBlockedPathsUnderTheRealLauncher(t *testing.T) {
 	if runner == "" {
 		t.Skip("CODING_TEST_LANDLOCK_RUNNER is not set")
 	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
+	// Outside /tmp: a confined command always writes its own private /tmp, so a
+	// tree there would be writable whatever the policy says.
+	base := os.Getenv("AGENTWORKS_LINUX_TEST_ROOT")
+	if base == "" {
+		t.Skip("AGENTWORKS_LINUX_TEST_ROOT (a writable folder outside /tmp) is not set")
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(base, "landlock-blocked-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	root, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
