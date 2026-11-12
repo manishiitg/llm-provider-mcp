@@ -274,18 +274,19 @@ func landlockArgs(policy *llmtypes.CLISecurityPolicy, args []string, workingDir 
 	// own namespaces an existing one is mounted over (hidden, or read-only for a
 	// blocked write) and the grant stays whole, so the CLI can still create files
 	// beside it (PLAT-746-924); a missing one, or any without those namespaces,
-	// splits the grant around it as before. The CLI's own working folder is never
-	// split: for Code it is the project, and splitting it would stop the CLI
-	// creating files there. Its blocked entries are the CLI's managed
-	// instruction files, which the bridge guards.
+	// splits the grant around it as before. Mounting covers the CLI's own
+	// working folder too (a server Crew's settings/ sits inside it). That folder
+	// is never split: for Code it is the project, and splitting it would stop
+	// the CLI creating files there; a missing blocked path inside it is left to
+	// the bridge, as before.
 	cwd := canonical(workingDir)
 	read, write = canonicalUnique(read), canonicalUnique(write)
-	blockedRead, blockedWrite := outside(canonicalUnique(policy.BlockedPaths), cwd), outside(canonicalUnique(policy.BlockedWritePaths), cwd)
+	blockedRead, blockedWrite := canonicalUnique(policy.BlockedPaths), canonicalUnique(policy.BlockedWritePaths)
 	var hidden, readOnly []string
 	if shellWrapEnabled {
 		hidden, readOnly, blockedRead, blockedWrite = mountedBlocks(read, write, blockedRead, blockedWrite)
 	}
-	read, write = splitAroundBlocked(read, write, blockedRead, blockedWrite)
+	read, write = splitAroundBlocked(read, write, outside(blockedRead, cwd), outside(blockedWrite, cwd))
 	config := landlockPolicy{
 		ReadPaths:        existing(canonicalUnique(read)),
 		WritePaths:       existing(canonicalUnique(write)),
