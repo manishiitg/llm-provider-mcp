@@ -774,6 +774,17 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 				if c.logger != nil {
 					c.logger.Infof("[CURSOR_SDK] stale_active_run agent=%s action=%s", event.AgentID, event.Action)
 				}
+			case "turn_ended":
+				// Cursor says its turn ended; the run itself may still be open (see the bridge).
+				if c.logger != nil {
+					c.logger.Infof("[CURSOR_SDK] turn_ended agent=%s chars=%d tools=%d", s.agentID, text.Len(), len(tools))
+				}
+			case "turn_end_settled":
+				// The bridge finished a turn Cursor had ended but whose run stayed open ("quiet", after
+				// the quiet period) or ended with the SDK's resume "no progress" error ("no_progress").
+				if c.logger != nil {
+					c.logger.Infof("[CURSOR_SDK] turn_end_settled agent=%s reason=%s detail=%s chars=%d", s.agentID, event.Action, event.Status, text.Len())
+				}
 			case "steer_outcome":
 				// Whether the running run took a mid-turn message ("complete_delivered") or the bridge answers
 				// it as a follow-up in this turn (any other outcome).

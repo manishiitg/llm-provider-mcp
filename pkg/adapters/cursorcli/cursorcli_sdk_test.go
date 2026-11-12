@@ -1,9 +1,11 @@
 package cursorcli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -451,5 +453,59 @@ func TestCursorSDKPlanTextBecomesReply(t *testing.T) {
 	}
 	if cursorSDKPlanText("Shell", `{"plan":"no"}`) != "" || cursorSDKPlanText("createPlan", `{"plan":" "}`) != "" {
 		t.Fatal("only a non-empty createPlan becomes the reply")
+	}
+}
+
+// RTS 12 Nov: the answer streamed, Cursor said its turn ended, then the SDK kept the run open (its
+// resume-from-checkpoint retries) and the chat waited 15 minutes for an error. A run left open after
+// the turn ended, or ended with the SDK's "no progress" error, finishes with the streamed answer.
+func TestCursorSDKTurnEndedRunThatStaysOpenFinishesWithTheAnswer(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	for name, ending := range map[string]string{
+		"run stays open":    `await new Promise(r => { cancelRun = () => r({status:'cancelled', result:''}); })`,
+		"no progress error": `({status:'error', error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			bridge, entry := filepath.Join(dir, "bridge.cjs"), filepath.Join(dir, "sdk.cjs")
+			sdk := `
+let cancelRun = () => {};
+exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>[]}};
+exports.Agent={create:async()=>({agentId:'a1', send:async(text, opts)=>({
+  async *stream(){ opts.onDelta({update:{type:'text-delta', text:'the answer'}}); opts.onDelta({update:{type:'turn-ended'}}); },
+  wait: async()=>` + ending + `,
+  cancel: async()=>cancelRun(),
+})})};`
+			for name, data := range map[string][]byte{bridge: cursorSDKBridge, entry: []byte(sdk)} {
+				if err := os.WriteFile(name, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			// The adapter keeps the bridge's input open for the whole chat; closing it cancels the run.
+			cmd := exec.CommandContext(ctx, "node", bridge, entry)
+			stdin, _ := cmd.StdinPipe()
+			stdout, _ := cmd.StdoutPipe()
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
+			_, _ = io.WriteString(stdin, `{"type":"start","turn_end_quiet_ms":200,"model":{"id":"composer","params":[{"id":"fast","value":"false"}]}}`+"\n"+`{"type":"prompt","text":"hi"}`+"\n")
+			var out strings.Builder
+			lines := bufio.NewScanner(stdout)
+			for lines.Scan() && !strings.Contains(lines.Text(), `"type":"result"`) {
+				out.WriteString(lines.Text() + "\n")
+			}
+			out.WriteString(lines.Text())
+			if ctx.Err() != nil {
+				t.Fatalf("the turn did not finish: %s", out.String())
+			}
+			if !strings.Contains(out.String(), `"type":"result","status":"finished"`) || !strings.Contains(out.String(), `"type":"turn_end_settled"`) {
+				t.Fatalf("turn did not finish with its answer: %s", out.String())
+			}
+		})
 	}
 }

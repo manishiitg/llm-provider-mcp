@@ -174,10 +174,36 @@ async function main() {
     let text = request.text, last;
     try {
       while (text !== undefined) {
+        // After Cursor says its turn ended, a brief stream error can make the SDK resume the same run
+        // from an older checkpoint; those resumes save nothing and the run only ends much later, if at
+        // all (RTS 12 Nov: the answer was out, then 15 silent minutes). So once the turn has ended and
+        // nothing new starts for a short while, the answer already streamed is the reply: the run is
+        // cancelled and the turn finishes. A run that ends with the SDK's own "no progress" error after
+        // the turn ended has finished too.
+        let turnEnded = false, quietEnded = false, quiet, giveUp;
+        const stopQuiet = () => { clearTimeout(quiet); quiet = undefined; };
+        const quietMs = start.turn_end_quiet_ms ?? 30000;
+        const gaveUp = new Promise(resolve => { giveUp = resolve; });
         const sendOptions = {
           // Reassert the selected variant on every turn, including resumed/follow-up runs.
           model: start.model,
           onDelta: ({ update }) => {
+            if (update.type === 'turn-ended') {
+              turnEnded = true;
+              emit({ type: 'turn_ended' });
+              stopQuiet();
+              quiet = setTimeout(() => {
+                if (!turnEnded) return;
+                quietEnded = true;
+                emit({ type: 'turn_end_settled', action: 'quiet', status: String(quietMs) });
+                run?.cancel().catch(() => {});
+                // A cancel the SDK never answers must not hold the turn either.
+                setTimeout(() => giveUp({ status: 'finished', result: '' }), 10000);
+              }, quietMs);
+            } else if (['step-started', 'user-message-appended', 'text-delta', 'thinking-delta', 'partial-tool-call', 'tool-call-started'].includes(update.type)) {
+              turnEnded = false;
+              stopQuiet();
+            }
             if (update.type === 'text-delta') emit({ type: 'delta', kind: 'text', text: update.text });
             else if (update.type === 'thinking-delta') emit({ type: 'delta', kind: 'thinking', text: update.text });
           },
@@ -189,11 +215,19 @@ async function main() {
           emit({ type: 'stale', agent_id: agent.agentId, action: 'cancelled' });
           run = await agent.send(text, sendOptions);
         }
-        for await (const event of run.stream()) {
-          if (event.type === 'tool_call') emit({ type: 'tool', call_id: event.call_id, name: event.name, status: event.status, args: event.args, result: event.result });
-          else if (event.type === 'usage') emit({ type: 'usage', usage: event.usage });
+        const current = run;
+        last = await Promise.race([(async () => {
+          for await (const event of current.stream()) {
+            if (event.type === 'tool_call') emit({ type: 'tool', call_id: event.call_id, name: event.name, status: event.status, args: event.args, result: event.result });
+            else if (event.type === 'usage') emit({ type: 'usage', usage: event.usage });
+          }
+          return current.wait();
+        })(), gaveUp]);
+        stopQuiet();
+        if (turnEnded && last.status !== 'finished' && (quietEnded || /repeated resume attempts made no progress/i.test(short(last.error)))) {
+          if (!quietEnded) emit({ type: 'turn_end_settled', action: 'no_progress', status: last.status });
+          last = { ...last, status: 'finished', error: undefined };
         }
-        last = await run.wait();
         run = undefined;
         if (last.status !== 'finished') break;
         let timer;
