@@ -1,6 +1,7 @@
 package codexcli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -61,6 +62,15 @@ const (
 
 func appendCodexDisableUpdateArgs(args []string) []string {
 	return append(args, "-c", "check_for_update_on_startup=false")
+}
+
+// appendCodexAccountArgs points Codex at the account's OpenAI API address, when the account has one
+// (llmtypes.CodexBaseURLKey). Codex ignores an address in its environment; only its config setting works.
+func appendCodexAccountArgs(args []string, opts *llmtypes.CallOptions) []string {
+	if url := llmtypes.ProviderAccountEnvironment(opts)[llmtypes.CodexBaseURLKey]; url != "" {
+		return append(args, "-c", fmt.Sprintf("openai_base_url=%q", url))
+	}
+	return args
 }
 
 var codexBridgeOnlyDisabledFeatures = []string{
