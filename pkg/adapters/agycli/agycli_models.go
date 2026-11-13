@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/vertex"
 )
 
 // DefaultModelID tracks the CLI default. Verified against `agy models`
@@ -13,25 +14,31 @@ const DefaultModelID = "gemini-3.8-flash-high"
 type knownAgyModel struct {
 	id   string
 	name string
-	// Per-1M-token USD rates (input, output, cached input) of the Gemini API
-	// model behind the effort tier; the same rates as the Vertex registry.
-	// Zero leaves the usage unpriced rather than guessed.
-	input  float64
-	out    float64
-	cached float64
+	// base is the Gemini API model behind the effort tier; its prices come
+	// from the Gemini registry, so dated price changes apply here too.
+	base string
 }
 
-// Only Gemini 3.8 Flash (owner, 2026-11-02: "use only 3.8 gemini"); the
-// Claude ids no live agy lane offered are gone.
+// The agy slugs listed by Antigravity's `agy models` docs (2026-11-13): the
+// Gemini 4 family and Gemini 3.8 Flash (owner, 2026-11-13: "add all models").
 var knownAgyCLIModels = []knownAgyModel{
-	{id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", input: 0.75, out: 3.75, cached: 0.075},
-	{id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", input: 0.75, out: 3.75, cached: 0.075},
-	{id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", input: 0.75, out: 3.75, cached: 0.075},
+	{id: "gemini-4-hydrogen-xhigh", name: "Gemini 4 Hydrogen (Extra High)", base: vertex.ModelGemini4Hydrogen},
+	{id: "gemini-4-hydrogen-high", name: "Gemini 4 Hydrogen (High)", base: vertex.ModelGemini4Hydrogen},
+	{id: "gemini-4-hydrogen-medium", name: "Gemini 4 Hydrogen (Medium)", base: vertex.ModelGemini4Hydrogen},
+	{id: "gemini-4-hydrogen-low", name: "Gemini 4 Hydrogen (Low)", base: vertex.ModelGemini4Hydrogen},
+	{id: "gemini-4-argon-high", name: "Gemini 4 Argon (High)", base: vertex.ModelGemini4Argon},
+	{id: "gemini-4-argon-medium", name: "Gemini 4 Argon (Medium)", base: vertex.ModelGemini4Argon},
+	{id: "gemini-4-carbon-high", name: "Gemini 4 Carbon (High)", base: vertex.ModelGemini4Carbon},
+	{id: "gemini-4-carbon-medium", name: "Gemini 4 Carbon (Medium)", base: vertex.ModelGemini4Carbon},
+	{id: "gemini-4-carbon-low", name: "Gemini 4 Carbon (Low)", base: vertex.ModelGemini4Carbon},
+	{id: "gemini-3.8-flash-high", name: "Gemini 3.8 Flash (High)", base: vertex.ModelGemini38Flash},
+	{id: "gemini-3.8-flash-medium", name: "Gemini 3.8 Flash (Medium)", base: vertex.ModelGemini38Flash},
+	{id: "gemini-3.8-flash-low", name: "Gemini 3.8 Flash (Low)", base: vertex.ModelGemini38Flash},
 }
 
 // agyReasoningEffortLevels mirrors the effort tiers baked into agy model
-// slugs (high/medium/low suffixes in `agy models` output).
-var agyReasoningEffortLevels = []string{"low", "medium", "high"}
+// slugs (xhigh/high/medium/low suffixes in `agy models` output).
+var agyReasoningEffortLevels = []string{"low", "medium", "high", "xhigh"}
 
 // GetAgyModelMetadata returns catalog metadata for known ids. Unknown ids
 // pass through with the provider set (the CLI resolves them); context and
@@ -43,6 +50,10 @@ func GetAgyModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 	}
 	for _, known := range knownAgyCLIModels {
 		if known.id == modelID {
+			var input, out, cached float64
+			if price, err := vertex.GetVertexGeminiModelMetadata(known.base); err == nil {
+				input, out, cached = price.InputCostPer1MTokens, price.OutputCostPer1MTokens, price.CachedInputCostPer1MTokens
+			}
 			return &llmtypes.ModelMetadata{
 				Provider:                   "agy-cli",
 				ModelID:                    known.id,
@@ -51,9 +62,9 @@ func GetAgyModelMetadata(modelID string) (*llmtypes.ModelMetadata, error) {
 				SupportsToolCalls:          true,
 				SupportsReasoningEffort:    true,
 				ReasoningEffortLevels:      append([]string(nil), agyReasoningEffortLevels...),
-				InputCostPer1MTokens:       known.input,
-				OutputCostPer1MTokens:      known.out,
-				CachedInputCostPer1MTokens: known.cached,
+				InputCostPer1MTokens:       input,
+				OutputCostPer1MTokens:      out,
+				CachedInputCostPer1MTokens: cached,
 			}, nil
 		}
 	}

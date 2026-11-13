@@ -157,8 +157,8 @@ func TestCodingAgentDefaultTierModelsPiCLITierDefaults(t *testing.T) {
 			t.Fatalf("%s reasoning_effort = %#v, want %q", name, got.Options["reasoning_effort"], wantEffort)
 		}
 	}
-	check("main", defaults.Main, "google/gemini-3.8-flash", "high")
-	check("high", defaults.High, "google/gemini-3.8-flash", "high")
+	check("main", defaults.Main, "google/gemini-4-hydrogen", "high")
+	check("high", defaults.High, "google/gemini-4-hydrogen", "high")
 	check("medium", defaults.Medium, "google/gemini-3.8-flash", "medium")
 	check("low", defaults.Low, "google/gemini-3.5-flash-lite", "low")
 }

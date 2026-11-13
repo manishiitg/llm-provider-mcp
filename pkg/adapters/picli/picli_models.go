@@ -3,6 +3,9 @@ package picli
 import "github.com/manishiitg/multi-llm-provider-go/llmtypes"
 
 const (
+	ModelGemini4Hydrogen    = "google/gemini-4-hydrogen"
+	ModelGemini4Argon       = "google/gemini-4-argon"
+	ModelGemini4Carbon      = "google/gemini-4-carbon"
 	ModelGemini35FlashLite  = "google/gemini-3.5-flash-lite"
 	ModelGemini31ProPreview = "google/gemini-3.1-pro-preview"
 	ModelMiniMaxM3          = "minimax/MiniMax-M3"
@@ -13,6 +16,9 @@ const (
 
 var knownPiCLIModels = []string{
 	DefaultModelID,
+	ModelGemini4Hydrogen,
+	ModelGemini4Argon,
+	ModelGemini4Carbon,
 	ModelGemini35FlashLite,
 	ModelGemini31ProPreview,
 	ModelMiniMaxM3,
@@ -35,6 +41,12 @@ func GetAllPiCLIModels() []*llmtypes.ModelMetadata {
 		switch modelID {
 		case DefaultModelID:
 			meta.ModelName = "Pi CLI (Gemini 3.8 Flash)"
+		case ModelGemini4Hydrogen:
+			meta.ModelName = "Pi CLI (Gemini 4 Hydrogen)"
+		case ModelGemini4Argon:
+			meta.ModelName = "Pi CLI (Gemini 4 Argon)"
+		case ModelGemini4Carbon:
+			meta.ModelName = "Pi CLI (Gemini 4 Carbon)"
 		case ModelGemini35FlashLite:
 			meta.ModelName = "Pi CLI (Gemini 3.5 Flash-Lite)"
 		case ModelGemini31ProPreview:
