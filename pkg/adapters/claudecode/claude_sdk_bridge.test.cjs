@@ -117,3 +117,23 @@ export function query({ prompt }) {
   assert.notEqual(results.at(-1).sdk_parked_turn, true);
   assert.equal(results.at(-1).sdk_parked, undefined);
 });
+
+// PLAT-746-941: preserve per-task reports; a shell command has no invented
+// model count and must not change the existing foreground hold decision.
+test('background task progress retains only its own usage and real bookends', () => {
+  const updates = [], tasks = createHelperTracker(event => updates.push(event.helper), true);
+  const send = (subtype, task_id, extra = {}) => tasks.observe({ type: 'system', subtype, task_id, run_id: '1', ...extra });
+  send('task_started', 'shell', { task_type: 'local_bash' });
+  assert.equal(tasks.running(), false);
+  send('task_started', 'agent-a', { task_type: 'local_agent' });
+  send('task_started', 'agent-b', { task_type: 'local_agent' });
+  send('task_progress', 'agent-a', { usage: { total_tokens: 18400, duration_ms: 134000 } });
+  send('task_progress', 'agent-b', { usage: { total_tokens: 500, duration_ms: 1000 } });
+  send('task_notification', 'agent-a', { status: 'completed', usage: { total_tokens: 24100, duration_ms: 182000 } });
+  send('task_notification', 'shell', { status: 'completed' });
+  assert.equal(updates.findLast(task => task.task_id === 'agent-a').total_tokens, 24100);
+  assert.equal(updates.findLast(task => task.task_id === 'agent-b').total_tokens, 500);
+  assert.equal(updates.findLast(task => task.task_id === 'shell').total_tokens, undefined);
+  assert.equal(updates.findLast(task => task.task_id === 'shell').state, 'finished');
+  assert.equal(tasks.running(), true); // agent-b, not the finished shell
+});

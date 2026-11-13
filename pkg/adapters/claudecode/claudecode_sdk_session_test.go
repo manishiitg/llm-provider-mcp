@@ -189,15 +189,30 @@ func TestClaudeSDKHelperExitAndParentIdentity(t *testing.T) {
 	session.observeHelper(SDKHelperTask{TaskID: "done", RunID: "2", State: "finished", Description: "Review parser"})
 	session.observeHelper(SDKHelperTask{TaskID: "done", RunID: "1", State: "started"})
 	session.observeHelper(SDKHelperTask{TaskID: "running", RunID: "1", State: "started"})
-	session.observeHelper(SDKHelperTask{TaskID: "running", RunID: "1", State: "progress"})
+	tokens := int64(18400)
+	session.observeHelper(SDKHelperTask{TaskID: "running", RunID: "1", State: "progress", TotalTokens: &tokens, DurationMS: 134000})
 	session.interruptHelpers()
 	session.interruptHelpers()
 	if len(updates) != 5 || updates[4].Task.State != "interrupted" || session.helpers["done"].State != "finished" {
 		t.Fatalf("wrong helper lifecycle: %+v", updates)
 	}
+	if updates[4].Task.TotalTokens == nil || *updates[4].Task.TotalTokens != 18400 {
+		t.Fatal("terminal state lost the last native task count")
+	}
 	for _, update := range updates {
 		if update.Owner != "parent-chat" || update.NativeSessionID != "native-parent" {
 			t.Fatalf("helper escaped its parent: %+v", update)
 		}
+	}
+}
+
+// PLAT-746-941: exercise the actual shipped JS bridge, including its native
+// task progress and async lifecycle fixtures, without a model or credentials.
+func TestClaudeSDKBackgroundTaskProgressBridge(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "node", "--test", "claude_sdk_bridge.test.cjs").CombinedOutput()
+	if err != nil {
+		t.Fatalf("SDK task bridge: %v\n%s", err, output)
 	}
 }

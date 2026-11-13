@@ -7,26 +7,34 @@ import "time"
 // Text is present only for assistant replies and provider-authored questions;
 // analytics consumers must not copy it into operational reports.
 type NativeRecord struct {
+	// Background task facts are supplied by the owning runtime/host, never
+	// estimated from a parent turn's usage. Nil Tokens means unreported.
+	TokenSource string    `json:"token_source,omitempty"`
+	WorkID      string    `json:"work_id,omitempty"`
+	TaskRunID   string    `json:"task_run_id,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	EndedAt     time.Time `json:"ended_at,omitempty"`
+	Tokens      *int64    `json:"tokens,omitempty"`
 	// AssistantBlockID is the native presentation identity shared with a live
 	// assistant block, not the transcript row UUID or a completion verdict.
-	AssistantBlockID string `json:"assistant_block_id,omitempty"`
-	ID         string       `json:"id"`
-	Provider   string       `json:"provider"`
-	SessionID  string       `json:"native_session_id"`
-	TurnID     string       `json:"native_turn_id,omitempty"`
-	ParentID   string       `json:"parent_id,omitempty"`
-	Kind       string       `json:"kind"`
-	State      string       `json:"state,omitempty"`
-	Origin     string       `json:"origin,omitempty"`
-	Timestamp  time.Time    `json:"timestamp,omitempty"`
-	Text       string       `json:"text,omitempty"`
-	Name       string       `json:"name,omitempty"`
-	ToolID     string       `json:"tool_id,omitempty"`
-	TaskID     string       `json:"task_id,omitempty"`
-	FollowupID string       `json:"followup_turn_id,omitempty"`
-	Model      string       `json:"model,omitempty"`
-	DurationMS int64        `json:"duration_ms,omitempty"`
-	Usage      *NativeUsage `json:"usage,omitempty"`
+	AssistantBlockID string       `json:"assistant_block_id,omitempty"`
+	ID               string       `json:"id"`
+	Provider         string       `json:"provider"`
+	SessionID        string       `json:"native_session_id"`
+	TurnID           string       `json:"native_turn_id,omitempty"`
+	ParentID         string       `json:"parent_id,omitempty"`
+	Kind             string       `json:"kind"`
+	State            string       `json:"state,omitempty"`
+	Origin           string       `json:"origin,omitempty"`
+	Timestamp        time.Time    `json:"timestamp,omitempty"`
+	Text             string       `json:"text,omitempty"`
+	Name             string       `json:"name,omitempty"`
+	ToolID           string       `json:"tool_id,omitempty"`
+	TaskID           string       `json:"task_id,omitempty"`
+	FollowupID       string       `json:"followup_turn_id,omitempty"`
+	Model            string       `json:"model,omitempty"`
+	DurationMS       int64        `json:"duration_ms,omitempty"`
+	Usage            *NativeUsage `json:"usage,omitempty"`
 	// Output is a finished command's output, used only to close that
 	// command's own tool card in its chat. It is never serialized, so saved
 	// activity, observer state and reports do not copy it.

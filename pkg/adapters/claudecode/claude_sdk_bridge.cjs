@@ -11,7 +11,7 @@ const deny = () => ({ behavior: 'deny', message: 'The request was cancelled. Use
 
 // Native Agent launches can be asynchronous without a run_in_background input.
 // Track their real task bookends (including resumed runs), never prose/tool output.
-function createHelperTracker(publish) {
+function createHelperTracker(publish, includeShell = false) {
   const tools = new Map(), helpers = new Map();
   const isHelper = event => event.task_type === 'local_agent' || ['Agent', 'Task'].includes(tools.get(event.tool_use_id));
   const observe = event => {
@@ -27,16 +27,24 @@ function createHelperTracker(publish) {
       if (!entry.task_id || entry.ambient || entry.skip_transcript) continue;
       const previous = helpers.get(entry.task_id);
       if (previous?.run_id && entry.run_id && entry.run_id < previous.run_id) continue;
-      if (!previous && !isHelper(entry)) continue;
+      if (!previous && !isHelper(entry) && !(includeShell && entry.task_type === 'local_bash')) continue;
+      const usage = entry.usage;
+      const measured = usage && Number.isSafeInteger(usage.total_tokens) && usage.total_tokens >= 0 ? { total_tokens: usage.total_tokens } : {};
+      const duration = usage && Number.isSafeInteger(usage.duration_ms) && usage.duration_ms >= 0 ? { duration_ms: usage.duration_ms } : {};
       if (event.subtype === 'task_progress') {
-        if (previous?.state === 'started') publish({ type: 'sdk_helper', helper: { ...previous, state: 'progress' } });
+        if (previous?.state === 'started') {
+          const updated = { ...previous, ...measured, ...duration, updated_at: Date.now() };
+          helpers.set(entry.task_id, updated);
+          publish({ type: 'sdk_helper', helper: { ...updated, state: 'progress' } });
+        }
         continue;
       }
       const sameRun = previous && previous.run_id === (entry.run_id || '');
       const state = event.subtype === 'task_notification' ?
         ({ completed: 'finished', failed: 'failed', stopped: 'interrupted' }[entry.status]) : 'started';
       if (!state || (sameRun && previous.state !== 'started' && state === 'started')) continue;
-      const helper = { task_id: entry.task_id, run_id: entry.run_id || '',
+      const helper = { ...(sameRun ? previous : {}), ...measured, ...duration,
+        kind: (sameRun && previous.kind) || (isHelper(entry) ? 'helper' : 'background_command'), updated_at: Date.now(), task_id: entry.task_id, run_id: entry.run_id || '',
         tool_use_id: entry.tool_use_id || (sameRun ? previous.tool_use_id : '') || '',
         description: entry.description || (sameRun ? previous.description : '') || 'Helper agent',
         started_at: sameRun ? previous.started_at : Date.now(), state };
@@ -44,7 +52,7 @@ function createHelperTracker(publish) {
       if (!sameRun || previous.state !== state) publish({ type: 'sdk_helper', helper });
     }
   };
-  return { observe, running: () => [...helpers.values()].some(helper => helper.state === 'started') };
+  return { observe, running: () => [...helpers.values()].some(helper => helper.state === 'started' && helper.kind !== 'background_command') };
 }
 
 async function main() {
@@ -101,7 +109,7 @@ async function main() {
     }
   }
   let run, wake, ended = false;
-  const helpers = createHelperTracker(emit);
+  const helpers = createHelperTracker(emit, true);
   // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
   // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
   // were never moved aside, so they never hold the turn, even when they start while a steer waits.
