@@ -42,6 +42,10 @@ type SDKBackgroundTask struct {
 // SDKHelperTask is lifecycle evidence from this query's native Agent tasks.
 // No child prompt, command, tool output or secret value is copied into it.
 type SDKHelperTask struct {
+	Kind        string `json:"kind,omitempty"`
+	TotalTokens *int64 `json:"total_tokens,omitempty"`
+	DurationMS  int64  `json:"duration_ms,omitempty"`
+	UpdatedAt   int64  `json:"updated_at,omitempty"`
 	TaskID      string `json:"task_id"`
 	RunID       string `json:"run_id"`
 	ToolUseID   string `json:"tool_use_id"`
@@ -93,9 +97,22 @@ func (s *claudeSDKSession) observeHelper(task SDKHelperTask) {
 		s.mu.Unlock()
 		return
 	}
-	if task.State != "progress" {
-		s.helpers[task.TaskID] = task
+	if exists && previous.RunID == task.RunID {
+		if task.StartedAt == 0 {
+			task.StartedAt = previous.StartedAt
+		}
+		if task.TotalTokens == nil {
+			task.TotalTokens = previous.TotalTokens
+		}
+		if task.Kind == "" {
+			task.Kind = previous.Kind
+		}
 	}
+	saved := task
+	if saved.State == "progress" {
+		saved.State = "started"
+	}
+	s.helpers[task.TaskID] = saved
 	nativeID := s.nativeID
 	s.mu.Unlock()
 	if task.State != "progress" {
@@ -117,6 +134,7 @@ func (s *claudeSDKSession) interruptHelpers() {
 	s.mu.Unlock()
 	for _, task := range tasks {
 		task.State = "interrupted"
+		task.UpdatedAt = time.Now().UnixMilli()
 		s.observeHelper(task)
 	}
 }
