@@ -202,23 +202,10 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	cmd.Env = append(cmd.Env, museRuntimeEnv(opts)...)
 	var keyFiles []string
 	removeKey := func() {}
-	// The key Muse uses (the selected one, else one the account or the server
-	// gives in the environment, such as a company account's model-proxy key)
-	// goes in this launch's own key file, never in the environment Muse's
-	// shells inherit.
-	key := a.apiKey
-	if key == "" {
-		key = museEnvValue(cmd.Env, "META_API_KEY")
-	}
-	if key != "" && runtime.GOOS == "darwin" {
-		// On a Mac `muse auth set` saves into the macOS Keychain, not a file: a
-		// launch folder has no keychain, so it hangs and macOS asks the person
-		// about a missing keychain. The Mac keeps the key in the environment.
-		if a.apiKey != "" {
-			cmd.Env = append(museWithoutEnv(cmd.Env, "META_API_KEY"), "META_API_KEY="+a.apiKey)
-		}
-		key = ""
-	}
+	// A slot keeps the shared login in its scoped environment, never a file
+	// readable by the slot. Its native shells scrub login variables (872-84).
+	key, keyEnv := museMSPKeyForLaunch(opts, a.apiKey, cmd.Env)
+	cmd.Env = keyEnv
 	if key != "" {
 		cmd.Env = museWithoutEnv(cmd.Env, "META_API_KEY")
 		keyFile, cleanupKey, err := a.museMSPStoreKey(ctx, opts, workdir, configHome, key, cmd.Env)
@@ -288,6 +275,19 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 	return r, nil
 }
 
+// museMSPKeyForLaunch returns a key to store in a private file only for
+// app-account Linux. Slot launches and macOS use the scoped environment.
+func museMSPKeyForLaunch(opts *llmtypes.CallOptions, key string, env []string) (string, []string) {
+	if key == "" {
+		key = museEnvValue(env, "META_API_KEY")
+	}
+	slot := opts != nil && opts.CLISecurity != nil && slotfs.IsSlotLaunch(opts.CLISecurity.PrivateHome)
+	if key != "" && (runtime.GOOS == "darwin" || slot) {
+		return "", append(museWithoutEnv(env, "META_API_KEY"), "META_API_KEY="+key)
+	}
+	return key, env
+}
+
 // museMSPStoreKey saves the selected Meta key with `muse auth set`, the key on
 // stdin, run as the same account as serve (stdin carries the protocol for serve
 // itself, and an environment variable would reach every shell Muse starts).
@@ -317,19 +317,7 @@ func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.Cal
 		return "", nil, fmt.Errorf("store the Muse key for this chat: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	keyFile := filepath.Join(keyHome, "muse", "auth.json")
-	if err := os.Chmod(keyFile, 0o600); err != nil {
-		remove()
-		return "", nil, fmt.Errorf("protect the Muse login file: %w", err)
-	}
-	// auth set creates its own owner-only muse/ folder and file AFTER the
-	// empty keyHome was shared. Share those new entries with this slot too;
-	// the existing inner Landlock policy still excludes them from shells.
-	if opts != nil && opts.CLISecurity != nil {
-		if err := slotfs.ShareTree(opts.CLISecurity.PrivateHome, keyHome); err != nil {
-			remove()
-			return "", nil, err
-		}
-	}
+	_ = os.Chmod(keyFile, 0o600)
 	link := filepath.Join(configHome, "muse", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
 		remove()
