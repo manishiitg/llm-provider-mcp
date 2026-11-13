@@ -1,6 +1,9 @@
 package vertex
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLatestGeminiModelMetadata(t *testing.T) {
 	tests := []struct {
@@ -14,6 +17,7 @@ func TestLatestGeminiModelMetadata(t *testing.T) {
 		{ModelGemini37Flash, "Gemini 3.7 Flash", 0.75, 3.75, 0.075, 2},
 		{ModelGemini38Flash, "Gemini 3.8 Flash", 0.75, 3.75, 0.075, 3},
 		{ModelGemini35FlashLite, "Gemini 3.5 Flash-Lite", 0.30, 2.50, 0.03, 3},
+		{ModelGemini4Hydrogen, "Gemini 4 Hydrogen", 1.50, 7.50, 0.075, 4},
 	}
 
 	for _, tt := range tests {
@@ -32,6 +36,25 @@ func TestLatestGeminiModelMetadata(t *testing.T) {
 				t.Fatalf("unexpected capability metadata: %+v", metadata)
 			}
 		})
+	}
+}
+
+// Carbon and Argon double in price on 2026-12-01; usage on either side of the
+// date is priced at the rate in force then.
+func TestGemini4FrontierPriceRise(t *testing.T) {
+	for _, tc := range []struct {
+		at                    time.Time
+		input, output, cached float64
+	}{
+		{gemini4FrontierPriceRise.Add(-time.Second), 2.00, 10.00, 0.10},
+		{gemini4FrontierPriceRise, 4.00, 20.00, 0.20},
+	} {
+		for _, id := range []string{ModelGemini4Carbon, ModelGemini4Argon} {
+			m := getVertexGeminiModelsAt(tc.at)[id]
+			if m.InputCostPer1MTokens != tc.input || m.OutputCostPer1MTokens != tc.output || m.CachedInputCostPer1MTokens != tc.cached {
+				t.Fatalf("%s at %s: %+v", id, tc.at, m)
+			}
+		}
 	}
 }
 

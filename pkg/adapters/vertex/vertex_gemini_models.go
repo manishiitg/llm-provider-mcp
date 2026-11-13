@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -24,7 +25,39 @@ const (
 
 	// Gemini 3.8 Series (GA, launched 2026-09-02)
 	ModelGemini38Flash = "gemini-3.8-flash"
+
+	// Gemini 4 Series: Argon (2026-10-13), Carbon, and Hydrogen (2026-11-12),
+	// the fast daily driver for agentic work.
+	ModelGemini4Carbon   = "gemini-4-carbon"
+	ModelGemini4Argon    = "gemini-4-argon"
+	ModelGemini4Hydrogen = "gemini-4-hydrogen"
 )
+
+// gemini4FrontierPriceRise is when Carbon and Argon leave their launch price
+// ($2/$10, cached $0.10) for the standard one ($4/$20, cached $0.20), per the
+// Gemini API pricing page (checked 2026-11-13).
+var gemini4FrontierPriceRise = time.Date(2026, time.December, 1, 0, 0, 0, 0, time.UTC)
+
+// gemini4Frontier returns Carbon or Argon metadata at the price in force at now.
+func gemini4Frontier(id, name string, now time.Time) llmtypes.ModelMetadata {
+	input, output, cached := 2.00, 10.00, 0.10
+	if !now.Before(gemini4FrontierPriceRise) {
+		input, output, cached = 4.00, 20.00, 0.20
+	}
+	return llmtypes.ModelMetadata{
+		ModelID:                    id,
+		ModelName:                  name,
+		ContextWindow:              1048576,
+		InputCostPer1MTokens:       input,
+		OutputCostPer1MTokens:      output,
+		CachedInputCostPer1MTokens: cached,
+		Provider:                   "vertex",
+		SupportsToolCalls:          true,
+		SupportsJSONMode:           true,
+		SupportsThinkingLevel:      true,
+		ThinkingLevels:             []string{"low", "medium", "high"},
+	}
+}
 
 // normalizeToBaseModel normalizes Gemini model IDs to base model names
 // Strips numeric version suffixes (-\d{3}) and -exp suffix
@@ -46,7 +79,28 @@ func normalizeToBaseModel(modelID string) string {
 
 // getVertexGeminiModels returns the map of Vertex Gemini model metadata
 func getVertexGeminiModels() map[string]llmtypes.ModelMetadata {
+	return getVertexGeminiModelsAt(time.Now())
+}
+
+func getVertexGeminiModelsAt(now time.Time) map[string]llmtypes.ModelMetadata {
 	return map[string]llmtypes.ModelMetadata{
+		ModelGemini4Carbon: gemini4Frontier(ModelGemini4Carbon, "Gemini 4 Carbon", now),
+		ModelGemini4Argon:  gemini4Frontier(ModelGemini4Argon, "Gemini 4 Argon", now),
+		// Gemini 4 Hydrogen: one flat rate across the 1M context; adds the
+		// xhigh thinking level (default high).
+		ModelGemini4Hydrogen: {
+			ModelID:                    ModelGemini4Hydrogen,
+			ModelName:                  "Gemini 4 Hydrogen",
+			ContextWindow:              1048576,
+			InputCostPer1MTokens:       1.50,
+			OutputCostPer1MTokens:      7.50,
+			CachedInputCostPer1MTokens: 0.075,
+			Provider:                   "vertex",
+			SupportsToolCalls:          true,
+			SupportsJSONMode:           true,
+			SupportsThinkingLevel:      true,
+			ThinkingLevels:             []string{"low", "medium", "high", "xhigh"},
+		},
 		// Gemini 3 Pro Preview - 1M context window
 		// Pricing tiered by input length (verified May 2026):
 		//   ≤200K tokens: $2.00 input / $12.00 output / $0.20 cached

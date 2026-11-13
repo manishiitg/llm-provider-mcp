@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -597,7 +598,10 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 	}
 
 	baseModelID := normalizeToBaseModel(modelID)
-	usesLatestSamplingRules := baseModelID == ModelGemini37Flash || baseModelID == ModelGemini38Flash || baseModelID == ModelGemini35FlashLite
+	isGemini4 := strings.HasPrefix(baseModelID, "gemini-4-")
+	// Google deprecated temperature, top_p and top_k from Gemini 3.6 Flash on,
+	// for all later models; Gemini 4 follows the same rules.
+	usesLatestSamplingRules := isGemini4 || baseModelID == ModelGemini37Flash || baseModelID == ModelGemini38Flash || baseModelID == ModelGemini35FlashLite
 
 	// Gemini 3.7 Flash, Gemini 3.8 Flash, and 3.5 Flash-Lite deprecate
 	// temperature, top_p, and top_k. Do not send those fields even when
@@ -695,6 +699,16 @@ func (g *GoogleGenAIAdapter) generateContentInner(ctx context.Context, opts *llm
 				if g.logger != nil {
 					g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are \"medium\" and \"high\". Ignoring.", opts.ThinkingLevel, modelID)
 				}
+			}
+		} else if isGemini4 {
+			levels := []string{"low", "medium", "high"}
+			if baseModelID == ModelGemini4Hydrogen {
+				levels = append(levels, "xhigh")
+			}
+			if slices.Contains(levels, opts.ThinkingLevel) {
+				config.ThinkingConfig = &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevel(opts.ThinkingLevel)}
+			} else if g.logger != nil {
+				g.logger.Errorf("⚠️ [GEMINI] Invalid thinking_level %q for %s; valid values are %q. Ignoring.", opts.ThinkingLevel, modelID, levels)
 			}
 		} else if baseModelID == ModelGemini38Flash {
 			switch opts.ThinkingLevel {
