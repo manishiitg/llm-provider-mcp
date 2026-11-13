@@ -221,6 +221,7 @@ func (c *CodexCLIAdapter) buildCodexInteractiveArgs(opts *llmtypes.CallOptions, 
 		args = append(args, "--profile", sessionProfile)
 	}
 	args = appendCodexDisableUpdateArgs(args)
+	args = appendCodexAccountArgs(args, opts)
 	args = append(args, "--no-alt-screen")
 	if modelToUse != "" && modelToUse != "codex-cli" {
 		args = append(args, "--model", modelToUse)

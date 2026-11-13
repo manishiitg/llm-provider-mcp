@@ -109,6 +109,7 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 	}
 	args := []string{}
 	args = appendCodexDisableUpdateArgs(args)
+	args = appendCodexAccountArgs(args, opts)
 	if codexOptionBool(opts, MetadataKeyDisableShellTool) {
 		for _, feature := range codexBridgeOnlyDisabledFeatures {
 			args = append(args, "--disable", feature)

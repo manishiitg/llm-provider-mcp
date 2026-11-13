@@ -53,7 +53,7 @@ func WithProviderAccountEnvironment(environment map[string]string) CallOption {
 }
 func providerAccountPathKey(key string) bool {
 	switch key {
-	case "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", MuseBaseURLKey, AnthropicBaseURLKey, CursorBackendURLKey:
+	case "HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", MuseBaseURLKey, AnthropicBaseURLKey, CursorBackendURLKey, CodexBaseURLKey:
 		return true
 	}
 	return false
@@ -66,6 +66,10 @@ const MuseBaseURLKey = "MUSE_BASE_URL"
 // AnthropicBaseURLKey is the account's Anthropic API address for Claude Code, for an account that reaches Anthropic
 // through another server. Claude Code reads it from its environment like the other account paths.
 const AnthropicBaseURLKey = "ANTHROPIC_BASE_URL"
+
+// CodexBaseURLKey is the account's OpenAI API address for Codex, for an account that reaches OpenAI through another
+// server (a login the server holds). Codex reads it only from its config, so it is passed as -c openai_base_url.
+const CodexBaseURLKey = "CODEX_ACCOUNT_BASE_URL"
 
 // CursorBackendURLKey is the account's Cursor backend address, for an account that reaches Cursor through another
 // server. The Cursor SDK reads it from its environment.
