@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
@@ -23,6 +24,10 @@ func museXDGDataHome() string {
 	return filepath.Join(home, ".local", "share")
 }
 
+// Cache only located files, partitioned by account data home and native session.
+// A log stays in the same dated directory; removal invalidates the entry.
+var museSessionLogPaths sync.Map
+
 // museSessionLogPath resolves
 // $XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<sessionID>/session.jsonl.
 // The date segment is the run date, so it is globbed, not assumed.
@@ -38,11 +43,20 @@ func museSessionLogPath(sessionID string, accountDataHome ...string) string {
 	if base == "" {
 		return ""
 	}
+	key := struct{ home, session string }{base, sessionID}
+	if cached, ok := museSessionLogPaths.Load(key); ok {
+		path := cached.(string)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		museSessionLogPaths.Delete(key)
+	}
 	matches, err := filepath.Glob(filepath.Join(base, "muse", "sessions", "*", "*", "*", sessionID, "session.jsonl"))
 	if err != nil || len(matches) == 0 {
 		return ""
 	}
 	sort.Strings(matches)
+	museSessionLogPaths.Store(key, matches[0])
 	return matches[0]
 }
 
