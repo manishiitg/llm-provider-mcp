@@ -419,6 +419,15 @@ func WrapCmd(cmd *exec.Cmd, hint string, env []string) (cleanup func(), err erro
 	cmd.Args = []string{sudoPath, "-n", "-u", slot, slotctl(), "exec", "--request-file", file}
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	cmd.Dir = "/"
+	// sudo must pass TERM to slotctl, which can signal its own child group.
+	// Killing the outer group outright leaves the slot's Muse process holding
+	// its native session (PLAT-872-119). Match the host slot wrapper's stop path.
+	if cmd.Cancel != nil {
+		cmd.Cancel = func() error { return terminateSlotCommand(cmd) }
+		if cmd.WaitDelay == 0 {
+			cmd.WaitDelay = 6 * time.Second
+		}
+	}
 	return func() { _ = os.Remove(file) }, nil
 }
 

@@ -317,7 +317,19 @@ func (a *MuseCLIAdapter) museMSPStoreKey(ctx context.Context, opts *llmtypes.Cal
 		return "", nil, fmt.Errorf("store the Muse key for this chat: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	keyFile := filepath.Join(keyHome, "muse", "auth.json")
-	_ = os.Chmod(keyFile, 0o600)
+	if err := os.Chmod(keyFile, 0o600); err != nil {
+		remove()
+		return "", nil, fmt.Errorf("protect the Muse login file: %w", err)
+	}
+	// auth set creates its own owner-only muse/ folder and file AFTER the
+	// empty keyHome was shared. Share those new entries with this slot too;
+	// the existing inner Landlock policy still excludes them from shells.
+	if opts != nil && opts.CLISecurity != nil {
+		if err := slotfs.ShareTree(opts.CLISecurity.PrivateHome, keyHome); err != nil {
+			remove()
+			return "", nil, err
+		}
+	}
 	link := filepath.Join(configHome, "muse", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
 		remove()
@@ -367,12 +379,24 @@ type museMSPSessionResult struct {
 func (a *MuseCLIAdapter) museMSPOpen(ctx context.Context, opts *llmtypes.CallOptions, owner, workdir, resumeID, fingerprint string) (*museMSPSession, bool, error) {
 	if s := museMSPSessionFor(owner); s != nil {
 		s.mu.Lock()
-		alive := s.rpc != nil && s.fingerprint == fingerprint && (resumeID == "" || resumeID == s.sessionID)
-		select {
-		case <-s.rpc.done:
-			alive = false
-		default:
+		reason := "reuse"
+		switch {
+		case s.rpc == nil:
+			reason = "missing_rpc"
+		case s.fingerprint != fingerprint:
+			reason = "launch_changed"
+		case resumeID != "" && resumeID != s.sessionID:
+			reason = "native_changed"
 		}
+		if s.rpc != nil {
+			select {
+			case <-s.rpc.done:
+				reason = "process_ended"
+			default:
+			}
+		}
+		alive := reason == "reuse"
+		a.logger.Infof("[MUSE_MSP] owner=%s native=%s action=open reason=%s", owner, s.sessionID, reason)
 		s.mu.Unlock()
 		if alive {
 			return s, false, nil

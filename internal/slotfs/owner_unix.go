@@ -4,6 +4,7 @@ package slotfs
 
 import (
 	"os"
+	"os/exec"
 	"syscall"
 )
 
@@ -23,3 +24,5 @@ func fileGID(info os.FileInfo) (int, bool) {
 	}
 	return int(st.Gid), true
 }
+
+func terminateSlotCommand(cmd *exec.Cmd) error { return cmd.Process.Signal(syscall.SIGTERM) }
