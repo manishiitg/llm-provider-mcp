@@ -2,6 +2,8 @@ package musecli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -28,7 +30,15 @@ func TestMissingMuseLogSearchBacksOffAndResetsForNewAccount(t *testing.T) {
 	t.Logf("missing log: before=240 directory searches/minute; after=%d in first minute, then at most2/minute", calls-1)
 }
 
-func BenchmarkMissingMuseLogSearchSchedule(b *testing.B) {
+func BenchmarkMissingMuseLogPolling(b *testing.B) {
+	root := b.TempDir()
+	for i := 0; i < 60; i++ {
+		p := filepath.Join(root, "muse", "sessions", fmt.Sprintf("%04d/%02d/%02d", 2020+i/36, 1+i%12, 1+i%28), fmt.Sprintf("session-%d", i))
+		if err := os.MkdirAll(p, 0700); err != nil {
+			b.Fatal(err)
+		}
+	}
+
 	for _, backoff := range []bool{false, true} {
 		b.Run(fmt.Sprintf("backoff_%t", backoff), func(b *testing.B) {
 			for n := 0; n < b.N; n++ {
@@ -37,9 +47,10 @@ func BenchmarkMissingMuseLogSearchSchedule(b *testing.B) {
 				calls := 0
 				for i := 0; i < 240; i++ {
 					if backoff {
-						retry.resolveAt(now.Add(time.Duration(i)*250*time.Millisecond), "account/native", func() string { calls++; return "" })
+						retry.resolveAt(now.Add(time.Duration(i)*250*time.Millisecond), "account/native", func() string { calls++; return museSessionLogPath("missing-session", root) })
 					} else {
 						calls++
+						museSessionLogPath("missing-session", root)
 					}
 				}
 				if backoff && calls != 6 {
