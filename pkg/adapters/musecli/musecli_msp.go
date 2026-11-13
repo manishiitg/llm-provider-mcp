@@ -16,6 +16,7 @@ import (
 
 	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/internal/slotfs"
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/sessiontransfer"
@@ -266,16 +267,20 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 		cleanupSandbox()
 		close(r.exited)
 	}()
-	initCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// A large chat's serve can take minutes to start (PLAT-872-119: a 60s bound killed it before it finished, every turn).
+	started := time.Now()
+	initCtx, cancel := context.WithTimeout(ctx, museMSPStartTimeout)
 	defer cancel()
 	initParams := map[string]any{"clientInfo": map[string]string{"name": "agentworks", "version": "1"}}
 	if len(museMSPTestCapabilities) > 0 {
 		initParams["capabilities"] = map[string]any{"requestedCapabilities": museMSPTestCapabilities}
 	}
 	if err := r.call(initCtx, "initialize", initParams, nil); err != nil {
+		a.logger.Infof("[MUSE_MSP] serve did not start in %s: %v", time.Since(started).Round(time.Millisecond), err)
 		r.close()
 		return nil, err
 	}
+	a.logger.Infof("[MUSE_MSP] serve started in %s", time.Since(started).Round(time.Millisecond))
 	if err := r.notify("initialized"); err != nil {
 		r.close()
 		return nil, err
@@ -386,12 +391,15 @@ func (a *MuseCLIAdapter) museMSPOpen(ctx context.Context, opts *llmtypes.CallOpt
 	rpc, err := a.launchMuseMSP(ctx, opts, workdir, configHome)
 	if err != nil {
 		cleanupConfig()
-		return nil, false, err
+		return nil, false, museReopenError(resumeID, err)
 	}
 	s := &museMSPSession{owner: owner, rpc: rpc, workdir: workdir, dataHome: museAccountDataHome(ctx), fingerprint: fingerprint, cleanup: cleanupConfig}
 	var opened museMSPSessionResult
 	if resumeID != "" {
+		resumeStarted := time.Now()
 		err = rpc.call(ctx, "session/resume", map[string]any{"commandId": museCommandID(), "sessionId": resumeID}, &opened)
+		a.logger.Infof("[MUSE_MSP] session %s reopen took %s (err=%v)", resumeID, time.Since(resumeStarted).Round(time.Millisecond), err)
+		err = museReopenError(resumeID, err)
 		if err == nil {
 			root := ""
 			if opened.Session.WorkspaceRoot != nil {
@@ -426,6 +434,19 @@ func (a *MuseCLIAdapter) museMSPOpen(ctx context.Context, opts *llmtypes.CallOpt
 	go a.pumpMuseMSP(s)
 	museMSPSessions.Unlock()
 	return s, true, nil
+}
+
+// museMSPStartTimeout bounds `muse serve` answering initialize.
+const museMSPStartTimeout = 5 * time.Minute
+
+// museReopenError gives a chat that could not reopen in time a plain next step: its history is too long to load, so
+// a new chat continues the work (the app shows "Start a new chat" for a too-long conversation).
+func museReopenError(resumeID string, err error) error {
+	if err == nil || resumeID == "" || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return &llmerrors.Error{Kind: llmerrors.KindContextTooLong, Provider: "muse-cli",
+		Err: fmt.Errorf("Muse could not reopen this chat in time: its history is too long to load (%v)", err)}
 }
 
 func museSameFolder(a, b string) bool {
