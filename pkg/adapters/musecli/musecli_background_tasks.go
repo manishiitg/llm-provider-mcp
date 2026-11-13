@@ -21,6 +21,7 @@ type BackgroundTaskEvent struct {
 
 type BackgroundTaskReader struct {
 	path       string
+	logRetry   museLogPathRetry
 	owner      string
 	nativeID   string
 	offset     int64
@@ -43,21 +44,26 @@ func NewBackgroundTaskReaderForOwner(ownerSessionID, nativeSessionID string, aft
 	return &BackgroundTaskReader{owner: ownerSessionID, nativeID: nativeSessionID, after: afterSequence, background: make(map[string]bool), terminal: make(map[string]bool)}
 }
 
-func museBackgroundLogPath(ownerSessionID, nativeSessionID string) string {
+// Snapshot the already known path/account home without doing directory IO.
+func museBackgroundLogSource(ownerSessionID, nativeSessionID string) (string, string) {
 	if ownerSessionID != "" {
 		musePersistentPool.Lock()
 		entry := musePersistentPool.m[ownerSessionID]
 		if entry != nil && entry.nativeSessionID == nativeSessionID {
 			path, home := entry.logPath, entry.accountDataHome
 			musePersistentPool.Unlock()
-			if path != "" {
-				return path
-			}
-			return museSessionLogPath(nativeSessionID, home)
+			return path, home
 		}
 		musePersistentPool.Unlock()
 	}
-	return museSessionLogPath(nativeSessionID)
+	return "", ""
+}
+func museBackgroundLogPath(ownerSessionID, nativeSessionID string) string {
+	path, home := museBackgroundLogSource(ownerSessionID, nativeSessionID)
+	if path != "" {
+		return path
+	}
+	return museSessionLogPath(nativeSessionID, home)
 }
 
 // LatestNativeSequence is a pre-turn baseline for an existing Muse session.
@@ -96,13 +102,21 @@ func (r *BackgroundTaskReader) Poll() ([]BackgroundTaskEvent, error) {
 		return nil, nil
 	}
 	if r.path == "" {
-		r.path = museBackgroundLogPath(r.owner, r.nativeID)
+		path, home := museBackgroundLogSource(r.owner, r.nativeID)
+		if home == "" {
+			home = museXDGDataHome()
+		}
+		if path == "" {
+			path = r.logRetry.resolve(home+"\x00"+r.nativeID, func() string { return museSessionLogPath(r.nativeID, home) })
+		}
+		r.path = path
 	}
 	if r.path == "" {
 		return nil, nil
 	}
 	f, err := os.Open(r.path)
 	if os.IsNotExist(err) {
+		r.path = ""
 		return nil, nil
 	}
 	if err != nil {

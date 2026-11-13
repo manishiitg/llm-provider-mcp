@@ -77,8 +77,9 @@ type QuestionEvent struct {
 // QuestionReader follows committed native rows. Its owner may acquire a
 // native session only after the reader starts.
 type QuestionReader struct {
-	owner, nativeID, path string
-	offset                int64
+	owner, nativeID, path, home string
+	logRetry                    museLogPathRetry
+	offset                      int64
 }
 
 func NewQuestionReaderForOwner(owner string) *QuestionReader { return &QuestionReader{owner: owner} }
@@ -90,30 +91,41 @@ func (r *QuestionReader) Poll() ([]QuestionEvent, error) {
 	}
 	musePersistentPool.Lock()
 	entry := musePersistentPool.m[key]
-	var nativeID, path string
+	var nativeID, path, home string
 	if entry != nil {
 		nativeID = entry.nativeSessionID
 		path = entry.logPath
-		if path == "" && nativeID != "" {
-			path = museSessionLogPath(nativeID, entry.accountDataHome)
-		}
+		home = entry.accountDataHome
 	}
 	musePersistentPool.Unlock()
 	if nativeID == "" {
 		if s := museMSPSessionFor(r.owner); s != nil {
 			s.mu.Lock()
-			nativeID, path = s.sessionID, museSessionLogPath(s.sessionID, s.dataHome)
+			nativeID, home = s.sessionID, s.dataHome
 			s.mu.Unlock()
 		}
 	}
-	if nativeID == "" || path == "" {
+	if nativeID == "" {
+		return nil, nil
+	}
+	if home == "" {
+		home = museXDGDataHome()
+	}
+	if path == "" && r.nativeID == nativeID && r.home == home && r.path != "" {
+		path = r.path
+	}
+	if path == "" {
+		path = r.logRetry.resolve(home+"\x00"+nativeID, func() string { return museSessionLogPath(nativeID, home) })
+	}
+	if path == "" {
 		return nil, nil
 	}
 	if r.nativeID != nativeID || r.path != path {
-		r.nativeID, r.path, r.offset = nativeID, path, 0
+		r.nativeID, r.path, r.home, r.offset = nativeID, path, home, 0
 	}
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
+		r.path = ""
 		return nil, nil
 	}
 	if err != nil {
