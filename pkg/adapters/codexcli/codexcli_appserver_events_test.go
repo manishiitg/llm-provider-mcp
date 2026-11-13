@@ -99,3 +99,43 @@ func TestCodexNativeTextBlocksUseStartsAndCompletedSnapshots(t *testing.T) {
 		t.Fatalf("duplicated stream %q", text.String())
 	}
 }
+
+// PLAT-746: compaction used to omit counts; only native installed usage is an after count.
+func TestCodexAppCompactionReportsNativeCountsAndRefreshesStatus(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		r := &codexRPC{events: make(chan codexRPCMessage, 12), done: make(chan struct{})}
+		send := func(method, fields string) {
+			r.events <- codexRPCMessage{Method: method, Params: json.RawMessage(`{"threadId":"thread","turnId":"turn",` + fields + `}`)}
+		}
+		send("thread/tokenUsage/updated", `"tokenUsage":{"total":{"inputTokens":90000,"totalTokens":91000},"last":{"inputTokens":90000,"totalTokens":91000},"modelContextWindow":200000}`)
+		send("item/started", `"item":{"id":"compact1","type":"contextCompaction"}`)
+		if late {
+			send("item/completed", `"item":{"id":"compact1","type":"contextCompaction"}`)
+		}
+		send("thread/tokenUsage/updated", `"tokenUsage":{"total":{"inputTokens":90000,"totalTokens":91000},"last":{"totalTokens":12000},"modelContextWindow":200000}`)
+		if !late {
+			send("item/completed", `"item":{"id":"compact1","type":"contextCompaction"}`)
+		}
+		send("turn/completed", `"turn":{"id":"turn","status":"completed"}`)
+		var end *llmtypes.ContextCompaction
+		var status *llmtypes.StatusLine
+		_, err := (&CodexCLIAdapter{}).consumeAppTurn(context.Background(), &codexAppSession{}, r, "thread", "turn", func(c llmtypes.StreamChunk) {
+			if c.ContextCompaction != nil && c.ContextCompaction.Phase == llmtypes.ContextCompactionPhaseEnd {
+				copy := *c.ContextCompaction
+				end = &copy
+			}
+			if c.StatusLine != nil {
+				status = c.StatusLine
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if end == nil || end.TokensBefore != 91000 || end.TokensAfter != 12000 {
+			t.Fatalf("late=%v compact=%+v", late, end)
+		}
+		if status == nil || status.Metadata[llmtypes.ContextUsedTokensMetaKey] != 12000 {
+			t.Fatalf("stale status %+v", status)
+		}
+	}
+}

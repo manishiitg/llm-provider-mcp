@@ -28,6 +28,14 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	var final string
 	var usage, baseline codexAppUsage
 	baselineSet := false
+	// Compaction counters belong to this native item, not cumulative billing.
+	var compact *llmtypes.ContextCompaction
+	lastContext := 0
+	s.mu.Lock()
+	if s.status != nil {
+		lastContext, _ = s.status.Metadata[llmtypes.ContextUsedTokensMetaKey].(int)
+	}
+	s.mu.Unlock()
 	toolStarts := map[string]time.Time{}
 	streamed := map[string]bool{}
 	seenUserItems := map[string]bool{}
@@ -163,6 +171,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				}
 				if next != "" && next != turn {
 					carried = joined()
+					compact = nil
 					turn, followupC, finishedResponse, final = next, nil, nil, ""
 					s.mu.Lock()
 					s.turnID = next
@@ -188,6 +197,17 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeReasoning, Content: event.Delta, Metadata: metadata})
 			case "thread/tokenUsage/updated":
 				current := event.TokenUsage.Total
+				// Codex reports the installed compacted context as zero-input last usage
+				// with totalTokens carrying the new context size (same as rollout reader).
+				if compact != nil && compact.TokensAfter == 0 && event.TokenUsage.Last.Input == 0 && event.TokenUsage.Last.Total > 0 {
+					compact.TokensAfter = event.TokenUsage.Last.Total
+					if compact.Phase == llmtypes.ContextCompactionPhaseEnd {
+						emit(llmtypes.ContextCompactionChunk(*compact))
+					}
+				}
+				if event.TokenUsage.Last.Total > 0 {
+					lastContext = event.TokenUsage.Last.Total
+				}
 				if !baselineSet {
 					baseline = codexAppUsage{Input: current.Input - event.TokenUsage.Last.Input, Cached: current.Cached - event.TokenUsage.Last.Cached, CacheWrite: current.CacheWrite - event.TokenUsage.Last.CacheWrite, Output: current.Output - event.TokenUsage.Last.Output, Reasoning: current.Reasoning - event.TokenUsage.Last.Reasoning, Total: current.Total - event.TokenUsage.Last.Total}
 					baselineSet = true
@@ -226,7 +246,11 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 						phase = llmtypes.ContextCompactionPhaseEnd
 						outcome = llmtypes.ContextCompactionOutcomeSuccess
 					}
-					emit(llmtypes.ContextCompactionChunk(llmtypes.ContextCompaction{Provider: "codex-cli", ID: item.ID, Phase: phase, Outcome: outcome}))
+					if compact == nil || compact.ID != item.ID || phase == llmtypes.ContextCompactionPhaseStart {
+						compact = &llmtypes.ContextCompaction{Provider: "codex-cli", ID: item.ID, TokensBefore: lastContext}
+					}
+					compact.Phase, compact.Outcome = phase, outcome
+					emit(llmtypes.ContextCompactionChunk(*compact))
 				}
 				if item.Type == "agentMessage" && msg.Method == "item/started" {
 					startBlock(item.ID)
@@ -448,6 +472,7 @@ func (c *CodexCLIAdapter) compactAppThread(ctx context.Context, s *codexAppSessi
 		c.logger.Infof("codex app-server idle compaction started thread=%s turn=%s", thread, turn)
 	}
 	compacted := false
+	var before, after int
 	resp, err := c.consumeAppTurn(ctx, s, r, thread, turn, func(chunk llmtypes.StreamChunk) {
 		if chunk.Type == llmtypes.StreamChunkTypeContextCompaction && chunk.ContextCompaction != nil {
 			compaction := *chunk.ContextCompaction
@@ -455,6 +480,7 @@ func (c *CodexCLIAdapter) compactAppThread(ctx context.Context, s *codexAppSessi
 			chunk.ContextCompaction = &compaction
 			if compaction.Phase == llmtypes.ContextCompactionPhaseEnd {
 				compacted = true
+				before, after = compaction.TokensBefore, compaction.TokensAfter
 			}
 		}
 		emit(chunk)
@@ -462,7 +488,7 @@ func (c *CodexCLIAdapter) compactAppThread(ctx context.Context, s *codexAppSessi
 	if err != nil {
 		return nil, err
 	}
-	result := llmtypes.IdleCompactResult{Compacted: compacted, Reason: llmtypes.IdleCompactReasonCompacted}
+	result := llmtypes.IdleCompactResult{Compacted: compacted, TokensBefore: before, TokensAfter: after, Reason: llmtypes.IdleCompactReasonCompacted}
 	if !compacted {
 		result.Reason = llmtypes.IdleCompactReasonNothing
 	}
