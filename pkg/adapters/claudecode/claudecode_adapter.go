@@ -404,6 +404,8 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			CachedInputCostWritePer1MTokens: 6.25,
 		}, nil
 	case "claude-sonnet-5-5":
+		// Anthropic pricing page (2026-11-13): cache hits are 0.05x input on
+		// Sonnet 5.5 ($0.10); carried 10% ($0.20) over from Sonnet 5 before.
 		return &llmtypes.ModelMetadata{
 			ModelID:                         modelID,
 			Provider:                        providerName,
@@ -411,7 +413,7 @@ func (c *ClaudeCodeAdapter) GetModelMetadata(modelID string) (*llmtypes.ModelMet
 			ContextWindow:                   200000,
 			InputCostPer1MTokens:            2.00,
 			OutputCostPer1MTokens:           10.00,
-			CachedInputCostPer1MTokens:      0.20,
+			CachedInputCostPer1MTokens:      0.10,
 			CachedInputCostWritePer1MTokens: 2.50,
 		}, nil
 	case "claude-haiku-5-5":
