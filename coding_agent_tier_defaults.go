@@ -78,9 +78,11 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Low:    model,
 		}, true
 	case ProviderPiCLI:
+		// Gemini 4 Hydrogen for Main and High; 3.8 Flash and 3.5 Flash-Lite
+		// stay on the cheaper tiers (owner, 2026-11-13).
 		return &CodingAgentDefaultTierModels{
-			Main:   codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
-			High:   codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "high"),
+			Main:   codingAgentReasoningRef(providerID, "google/gemini-4-hydrogen", "high"),
+			High:   codingAgentReasoningRef(providerID, "google/gemini-4-hydrogen", "high"),
 			Medium: codingAgentReasoningRef(providerID, "google/gemini-3.8-flash", "medium"),
 			Low:    codingAgentReasoningRef(providerID, "google/gemini-3.5-flash-lite", "low"),
 		}, true
@@ -95,12 +97,12 @@ func GetCodingAgentDefaultTierModels(provider Provider) (*CodingAgentDefaultTier
 			Low:    codingAgentReasoningRef(providerID, "muse-ember-1.0", "high"),
 		}, true
 	case ProviderAgyCLI:
-		// Effort is baked into agy's model slugs (high/medium/low); Main runs
-		// the flagship, matching `agy models` output.
+		// Effort is baked into agy's model slugs. Gemini 4 Hydrogen for Main
+		// and High; 3.8 Flash for Medium and Low (owner, 2026-11-13).
 		const agyModel = "gemini-3.8-flash"
 		return &CodingAgentDefaultTierModels{
-			Main:   codingAgentReasoningRef(providerID, agyModel+"-high", "high"),
-			High:   codingAgentReasoningRef(providerID, agyModel+"-high", "high"),
+			Main:   codingAgentReasoningRef(providerID, "gemini-4-hydrogen-high", "high"),
+			High:   codingAgentReasoningRef(providerID, "gemini-4-hydrogen-high", "high"),
 			Medium: codingAgentReasoningRef(providerID, agyModel+"-medium", "medium"),
 			Low:    codingAgentReasoningRef(providerID, agyModel+"-low", "low"),
 		}, true

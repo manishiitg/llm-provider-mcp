@@ -74,10 +74,10 @@ func AgyACPSessionActive(owner string) bool {
 	return agyACPSessions.m[owner] != nil
 }
 
-// agyACPModel splits agy's model id ("gemini-3.8-flash-high") into the ACP
-// model option and thinking level.
+// agyACPModel splits agy's model id ("gemini-3.8-flash-high",
+// "gemini-4-hydrogen-xhigh") into the ACP model option and thinking level.
 func agyACPModel(model, effort string) (string, string) {
-	for _, level := range []string{"low", "medium", "high"} {
+	for _, level := range agyReasoningEffortLevels {
 		if strings.HasSuffix(model, "-"+level) {
 			if effort == "" {
 				effort = level
