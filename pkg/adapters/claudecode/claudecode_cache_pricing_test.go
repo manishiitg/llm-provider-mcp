@@ -16,12 +16,12 @@ import (
 // entire reported amount, and it always errs low.
 var claudeCodeCachePricedModels = []string{
 	"claude-opus-5",
-	"claude-sonnet-5-5",
 	"claude-haiku-5-5",
 }
 
 // These older Anthropic models price a cache read at 10% of the base input
-// rate. Opus 5.5 has a different rate and is checked separately below.
+// rate. Opus 5.5 and Sonnet 5.5 have different rates and are checked
+// separately below.
 func TestClaudeCodeModelsPriceCacheReads(t *testing.T) {
 	interactive := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{})
 
@@ -87,6 +87,36 @@ func TestClaudeCodeOpus55Pricing(t *testing.T) {
 		}
 		if input != 4 || output != 20 || cacheRead != 0.2 || cacheWrite != 5 {
 			t.Errorf("%s Opus 5.5 pricing = (%v, %v, %v, %v), want (4, 20, 0.2, 5)", name, input, output, cacheRead, cacheWrite)
+		}
+	}
+}
+
+// Sonnet 5.5 prices cache hits at 0.05x input and 5-minute cache writes at
+// 1.25x (Anthropic pricing page, 2026-11-13). It was priced at 10% before,
+// carried over from Sonnet 5, overstating cache reads twofold.
+func TestClaudeCodeSonnet55Pricing(t *testing.T) {
+	for name, adapter := range map[string]func() (float64, float64, float64, float64, error){
+		"interactive": func() (float64, float64, float64, float64, error) {
+			meta, err := NewClaudeCodeInteractiveAdapter("claude-code", &MockLogger{}).GetModelMetadata("claude-sonnet-5-5")
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			return meta.InputCostPer1MTokens, meta.OutputCostPer1MTokens, meta.CachedInputCostPer1MTokens, meta.CachedInputCostWritePer1MTokens, nil
+		},
+		"compat": func() (float64, float64, float64, float64, error) {
+			meta, err := NewClaudeCodeAdapter("", "claude-sonnet-5-5", &MockLogger{}).GetModelMetadata("claude-sonnet-5-5")
+			if err != nil {
+				return 0, 0, 0, 0, err
+			}
+			return meta.InputCostPer1MTokens, meta.OutputCostPer1MTokens, meta.CachedInputCostPer1MTokens, meta.CachedInputCostWritePer1MTokens, nil
+		},
+	} {
+		input, output, cacheRead, cacheWrite, err := adapter()
+		if err != nil {
+			t.Fatalf("%s metadata: %v", name, err)
+		}
+		if input != 2 || output != 10 || cacheRead != 0.1 || cacheWrite != 2.5 {
+			t.Errorf("%s Sonnet 5.5 pricing = (%v, %v, %v, %v), want (2, 10, 0.1, 2.5)", name, input, output, cacheRead, cacheWrite)
 		}
 	}
 }
