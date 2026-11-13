@@ -141,6 +141,9 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 			switch text(block, "type") {
 			case "text":
 				out.Kind, out.State, out.Text = "reply", "committed", text(block, "text")
+				if messageID := text(msg, "id"); messageID != "" {
+					out.AssistantBlockID = "claude:" + messageID + ":" + strconv.Itoa(i)
+				}
 				emit(b, out)
 			case "tool_use":
 				out.Kind, out.State, out.ToolID, out.Name = "tool", "started", text(block, "id"), text(block, "name")

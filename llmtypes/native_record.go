@@ -7,6 +7,9 @@ import "time"
 // Text is present only for assistant replies and provider-authored questions;
 // analytics consumers must not copy it into operational reports.
 type NativeRecord struct {
+	// AssistantBlockID is the native presentation identity shared with a live
+	// assistant block, not the transcript row UUID or a completion verdict.
+	AssistantBlockID string `json:"assistant_block_id,omitempty"`
 	ID         string       `json:"id"`
 	Provider   string       `json:"provider"`
 	SessionID  string       `json:"native_session_id"`
