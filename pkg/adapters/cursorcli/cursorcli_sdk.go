@@ -175,6 +175,9 @@ func (p *cursorSDKProcess) send(v any) error {
 		if err == nil {
 			_, err = io.WriteString(p.stdin, "\n")
 		}
+		if err != nil {
+			p.finish(fmt.Errorf("Cursor image frame write failed"))
+		}
 		return err
 	}
 	return json.NewEncoder(p.stdin).Encode(v)
