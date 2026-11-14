@@ -65,6 +65,7 @@ func TestNativeProviderFailuresHaveSpecificActionsAndMaskedModels(t *testing.T) 
 		failure         *Error
 		message, action string
 	}{
+		{&Error{Provider: "agy-cli", Kind: KindQuotaExhausted, Err: errors.New("Antigravity stopped this turn; it may be out of quota.")}, "may be out of quota", "pick another model"},
 		{&Error{Provider: "agy-cli", Kind: KindQuotaExhausted, RetryAt: reset, Err: errors.New("quota")}, "Antigravity quota", "2030-01-02T01:00:00Z"},
 		{&Error{Provider: "pi-cli", Kind: KindAuth, Err: errors.New("API_KEY=private-value")}, "not signed in", "/login"},
 		{&Error{Provider: "agy-cli", Kind: KindModelNotFound, Model: "model API_KEY=private-value", Err: errors.New("missing")}, "not available for this account", "Pick another model"},
