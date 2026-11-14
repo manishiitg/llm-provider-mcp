@@ -204,6 +204,8 @@ async function main() {
         }
         else if (request.type === 'adopt') {
           keepWarm = request.keep_warm === true;
+          nextPromptTurn = ''; settledPromptTurn = '';
+          if (nextPromptCapable && typeof run?.applyFlagSettings === 'function') void run.applyFlagSettings({promptSuggestionEnabled:false}).catch(() => {});
           // The host takes the model turn Claude started on its own: from here its output is the host's turn, and
           // its result ends that turn as usual. One that already ended is reported so the host ends its turn too.
           if (parked && parkedTurnRunning) { parked = false; turnActive = true; strayCheck = false; promptConsumed = true; }
@@ -257,6 +259,8 @@ async function main() {
     while (!ended || input.length) {
       if (!input.length) { await new Promise(resolve => { wake = resolve; }); wake = undefined; continue; }
       const next = input.shift();
+      // query() returns its control handle before this microtask resumes.
+      await Promise.resolve();
       if (nextPromptCapable && next.nextPromptTurn) {
         if (typeof run?.applyFlagSettings === 'function') {
           await run.applyFlagSettings({ promptSuggestionEnabled: next.nextPrompt && !suggestionNearLimit });
