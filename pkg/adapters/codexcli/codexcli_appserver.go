@@ -26,6 +26,7 @@ type codexAppSession struct {
 	goal                         *llmtypes.NativeGoal
 	goalActivationPending        bool
 	goalPausedForWake            bool
+	goalStateChanged             chan struct{}
 	turnMu                       sync.Mutex
 	mu                           sync.Mutex
 	rpc                          *codexRPC
