@@ -34,6 +34,11 @@ func TestNextPromptRejectsReplySizedOutputAndNearLimitSampling(t *testing.T) {
 	if got.Text != "" || got.Reason != "too_long" {
 		t.Fatalf("reply-sized prediction: %+v", got)
 	}
+	scope.StillCurrent = func(string) bool { return false }
+	scope.Finish(NextPromptResult{Text: "late hint", Usage: &NextPromptUsage{ResponseID: "paid-sample", Input: 100, CachedInput: 80, Output: 5}})
+	if got.Text != "" || got.Reason != "newer_input_or_stopped" || got.Usage == nil || got.Usage.ResponseID != "paid-sample" {
+		t.Fatalf("late delivery escaped the host fence or lost accounting: %+v", got)
+	}
 	if !NextPromptNearLimit([]RateLimitWindow{{UsedPercent: 90}}) || NextPromptNearLimit([]RateLimitWindow{{UsedPercent: 50}}) {
 		t.Fatal("near-limit gate")
 	}

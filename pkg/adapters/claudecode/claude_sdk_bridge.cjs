@@ -261,7 +261,7 @@ async function main() {
       const next = input.shift();
       // query() returns its control handle before this microtask resumes.
       await Promise.resolve();
-      if (nextPromptCapable && next.nextPromptTurn) {
+      if (nextPromptCapable && next.nextPrompt !== undefined) {
         if (typeof run?.applyFlagSettings === 'function') {
           try { await run.applyFlagSettings({ promptSuggestionEnabled: next.nextPrompt && !suggestionNearLimit }); }
           catch { nextPromptCapable = false; emit({type:'sdk_prompt_skipped', sdk_prompt_turn:next.nextPromptTurn, prompt_skip_reason:'unsupported_sdk'}); }
