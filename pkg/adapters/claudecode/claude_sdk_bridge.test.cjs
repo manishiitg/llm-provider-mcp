@@ -359,3 +359,23 @@ export function query({prompt,options}) {
   assert.equal(suggestions[0].sdk_prompt_turn,'host-2');
   assert.ok(events.indexOf(suggestions[0])>events.indexOf(results[1]));
 });
+
+test('warm turn setters await acknowledgements and patch only effortLevel', async () => {
+  const { applySDKTurnSettings } = require('./claude_sdk_bridge.cjs');
+  const calls = [], flags = { promptSuggestionEnabled: true };
+  const run = {
+    async setModel(value) { await Promise.resolve(); calls.push(['model', value]); },
+    async setPermissionMode(value) { await Promise.resolve(); calls.push(['permission', value]); },
+    async applyFlagSettings(value) { await Promise.resolve(); Object.assign(flags, value); calls.push(['flags', value]); },
+  };
+  const current = { model: 'one', permission_mode: 'dontAsk', effort: 'high' };
+  const wanted = { model: 'two', permission_mode: 'plan', effort: null };
+  await applySDKTurnSettings(run, current, wanted);
+  assert.deepEqual(calls, [['model', 'two'], ['permission', 'plan'], ['flags', { effortLevel: null }]]);
+  assert.deepEqual(current, wanted);
+  assert.equal(flags.promptSuggestionEnabled, true);
+  await applySDKTurnSettings(run, current, wanted);
+  assert.equal(calls.length, 3);
+  await assert.rejects(applySDKTurnSettings({ setModel: async () => { throw new Error('refused'); } }, current, { ...wanted, model: 'refused' }));
+  assert.equal(current.model, 'two');
+});
