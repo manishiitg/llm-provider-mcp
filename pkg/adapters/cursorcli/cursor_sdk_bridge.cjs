@@ -143,6 +143,9 @@ async function main() {
   const control = request => {
     if (request.type === 'steer') {
       // Go only steers during its turn; before this turn's prompt arrives, hold it for that prompt.
+      // A late image capability cannot survive this host turn's cleanup.
+      // Return it to the durable host lane rather than accepting a stale ID.
+      if (!busy && request.image_id) { emit({type:'steer_accepted',id:request.id,accepted:false});return true; }
       if (!busy) { early.push({text:request.text,image_id:request.image_id}); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
       // The prompt arrived but its run is still starting: answer it right after that run, same turn.
       if (!run) { followups.push({text:request.text,image_id:request.image_id}); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
