@@ -40,6 +40,7 @@ func (scope NextPromptScope) Finish(result NextPromptResult) {
 	if scope.Complete == nil {
 		return
 	}
+	result.HostTurn = scope.TurnID
 	result.Text = strings.TrimSpace(result.Text)
 	if !scope.Eligible {
 		result.Text = ""
