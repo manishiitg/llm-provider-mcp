@@ -47,8 +47,14 @@ func recordCodexGoal(s *codexAppSession, goal *llmtypes.NativeGoal, emit func(ll
 	if goal == nil || (goal.Status != "active" && goal.Status != "paused") {
 		s.goalPausedForWake = false
 	}
-	owner, thread := s.owner, s.threadID
+	owner, thread, stateChanged := s.owner, s.threadID, s.goalStateChanged
 	s.mu.Unlock()
+	if changed && stateChanged != nil {
+		select {
+		case stateChanged <- struct{}{}:
+		default:
+		}
+	}
 	if !changed && reason != "native_read" {
 		return
 	}

@@ -99,8 +99,30 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 		}
 		return carried + "\n\n" + final
 	}
+	s.mu.Lock()
+	if s.goalStateChanged == nil {
+		s.goalStateChanged = make(chan struct{}, 1)
+	}
+	goalStateChanged := s.goalStateChanged
+	s.mu.Unlock()
+
 	for {
 		select {
+		case <-goalStateChanged:
+			// A confirmed control RPC may race ahead of (or after) its native
+			// notification. Once the turn ended, observe that pause immediately.
+			if waitingForGoal && !codexGoalActive(s) {
+				s.mu.Lock()
+				status := "cleared"
+				if s.goal != nil {
+					status = s.goal.Status
+				}
+				s.mu.Unlock()
+				log.Printf("[AGENT_GOAL] session=%s native=%s action=done status=%s reason=confirmed_control_observed", s.owner, thread, status)
+				completed = true
+				return codexAppResponse(s, joined(), usage), nil
+			}
+
 		case <-followupC:
 			if waitingForGoal {
 				pauseCtx, pauseCancel := context.WithTimeout(ctx, 10*time.Second)
