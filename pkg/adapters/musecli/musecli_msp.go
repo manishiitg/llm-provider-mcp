@@ -244,14 +244,19 @@ func (a *MuseCLIAdapter) launchMuseMSP(ctx context.Context, opts *llmtypes.CallO
 		cleanupSandbox()
 		return nil, fmt.Errorf("start muse serve: %w", err)
 	}
-	r := &museRPC{logger: a.logger, cmd: cmd, stdin: stdin, pending: map[string]chan museRPCMessage{}, events: make(chan museRPCMessage, 4096), done: make(chan struct{}), exited: make(chan struct{}), stop: stop}
+	r := &museRPC{logger: a.logger, cmd: cmd, stdin: stdin, pending: map[string]chan museRPCMessage{}, events: make(chan museRPCMessage, 4096), done: make(chan struct{}), exited: make(chan struct{}), exitInfo: make(chan struct{}), stop: stop}
 	go r.read(stdout)
 	go func() {
 		err := cmd.Wait()
 		if tail := strings.TrimSpace(stderr.String()); tail != "" {
 			a.logger.Infof("[CLI_EXIT] provider=muse-cli serve exited (%v): %s", err, tail)
 		}
-		r.finish(fmt.Errorf("muse serve exited: %v", err))
+		exitErr := clisandbox.UnexpectedExit("Muse", err, stderr.String())
+		r.mu.Lock()
+		r.exitErr = exitErr
+		r.mu.Unlock()
+		close(r.exitInfo)
+		r.finish(exitErr)
 		cleanupSandbox()
 		close(r.exited)
 	}()

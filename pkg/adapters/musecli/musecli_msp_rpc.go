@@ -48,8 +48,11 @@ type museRPC struct {
 	events  chan museRPCMessage
 	done    chan struct{}
 	exited  chan struct{}
-	stop    context.CancelFunc
-	once    sync.Once
+	// exitInfo closes once exitErr (how the process ended) is stored; the output reader waits for it at EOF.
+	exitInfo chan struct{}
+	exitErr  error
+	stop     context.CancelFunc
+	once     sync.Once
 }
 
 func (r *museRPC) write(v any) error {
@@ -189,7 +192,21 @@ func (r *museRPC) read(stdout io.Reader) {
 	if err := scanner.Err(); err != nil {
 		r.finish(fmt.Errorf("read muse serve: %w", err))
 	} else {
-		r.finish(io.EOF)
+		// The pipe closes before the process is reaped: wait briefly for how it ended, so the person reads the exit
+		// status, not a bare EOF.
+		if r.exitInfo != nil {
+			select {
+			case <-r.exitInfo:
+			case <-time.After(3 * time.Second):
+			}
+		}
+		r.mu.Lock()
+		exitErr := r.exitErr
+		r.mu.Unlock()
+		if exitErr == nil {
+			exitErr = io.EOF
+		}
+		r.finish(exitErr)
 	}
 }
 

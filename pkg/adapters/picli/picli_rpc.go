@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/internal/clisandbox"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
 )
@@ -177,11 +178,17 @@ func (p *PiCLIAdapter) launchRPC(ctx context.Context, opts *llmtypes.CallOptions
 		cleanup()
 		return nil, "", err
 	}
-	r := &piRPC{cmd: cmd, nativeID: nativeID, stdin: stdin, pending: map[string]chan piRPCRecord{}, events: make(chan piRPCRecord, 4096), done: make(chan struct{}), exited: make(chan struct{}), stop: stop}
+	r := &piRPC{cmd: cmd, nativeID: nativeID, stdin: stdin, pending: map[string]chan piRPCRecord{}, events: make(chan piRPCRecord, 4096), done: make(chan struct{}), exited: make(chan struct{}), exitInfo: make(chan struct{}), stop: stop}
 	go r.read(stdout)
 	go func() {
 		err := cmd.Wait()
-		r.finish(fmt.Errorf("Pi RPC process exited: %v", err))
+		// Pi's stderr can carry credential-bearing extension errors, so only the exit status is reported.
+		exitErr := clisandbox.UnexpectedExit("Pi", err, "")
+		r.mu.Lock()
+		r.exitErr = exitErr
+		r.mu.Unlock()
+		close(r.exitInfo)
+		r.finish(exitErr)
 		cleanup()
 		close(r.exited)
 	}()
