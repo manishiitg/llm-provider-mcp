@@ -346,16 +346,17 @@ func startClaudeLineReader(stdout io.Reader) *claudeLineReader {
 }
 
 type claudeSDKSession struct {
-	owner   string
-	launch  claudeSDKLaunch
-	cmd     *exec.Cmd
-	input   *claudeSDKInput
-	reader  *claudeLineReader
-	stderr  *claudeLockedBuffer
-	exited  chan struct{}
-	waitErr error // valid after exited closes
-	kill    context.CancelFunc
-	logger  interfaces.Logger
+	nextPrompt llmtypes.NextPromptScope
+	owner      string
+	launch     claudeSDKLaunch
+	cmd        *exec.Cmd
+	input      *claudeSDKInput
+	reader     *claudeLineReader
+	stderr     *claudeLockedBuffer
+	exited     chan struct{}
+	waitErr    error // valid after exited closes
+	kill       context.CancelFunc
+	logger     interfaces.Logger
 
 	mu        sync.Mutex
 	nativeID  string
@@ -614,6 +615,8 @@ func (s *claudeSDKSession) handleKeptLine(line string) bool {
 		return true
 	}
 	switch ev.Type {
+	case "prompt_suggestion", "sdk_prompt_skipped":
+		s.completeNextPrompt(ev)
 	case "sdk_helper":
 		if ev.Helper != nil {
 			s.observeHelper(*ev.Helper)
@@ -1032,4 +1035,17 @@ func ClaudeSDKWakeIdentity(owner string) (string, uint64) {
 		return "", 0
 	}
 	return s.nativeID, s.wakeID
+}
+
+// Native suggestions arrive after result, while the kept session drains. Match
+// the exact host turn before delivering to its captured host callback.
+func (s *claudeSDKSession) completeNextPrompt(event claudeStreamEvent) {
+	s.mu.Lock()
+	scope := s.nextPrompt
+	native := s.nativeID
+	s.mu.Unlock()
+	if scope.Complete == nil || scope.TurnID != event.SDKPromptTurn {
+		return
+	}
+	scope.Finish(llmtypes.NextPromptResult{Text: event.Suggestion, Reason: event.PromptSkipReason, NativeThread: native})
 }

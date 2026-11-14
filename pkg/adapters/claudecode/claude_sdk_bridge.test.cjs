@@ -317,3 +317,44 @@ export function query({ prompt }) {
   assert.equal(released, true, 'image blocks were not released before the next warm prompt');
   assert.equal(finishedWarm, true, 'the same kept session failed its next turn');
 });
+
+test('PLAT-746-992 cached SDK suggestions arrive after result, skip first/near-limit and never send themselves', { timeout: 5000 }, async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'sdk-next-prompt-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  writeFileSync(join(folder, 'sdk.mjs'), `
+export function query({prompt,options}) {
+  if (options.promptSuggestions !== true) throw new Error('native prediction option missing');
+  let enabled = false;
+  const iterator = (async function*(){
+    for (let turn=1; turn<=3; turn++) {
+      const input = await prompt.next();
+      if (input.done) throw new Error('input closed early');
+      if (input.value.message.content !== 'explicit input '+turn) throw new Error('prediction sent as input');
+      yield {type:'result',result:'done '+turn,sample_enabled:enabled,user_message_uuids:[input.value.uuid]};
+      if (enabled) yield {type:'prompt_suggestion',suggestion:'Check the diff',uuid:'suggestion-'+turn,session_id:'native'};
+      if (turn===2) yield {type:'rate_limit_event',rate_limit_info:{status:'allowed_warning',rateLimitType:'five_hour',utilization:0.95}};
+    }
+  })();
+  iterator.applyFlagSettings = async settings => {enabled=settings.promptSuggestionEnabled;};
+  iterator.close = () => {};
+  return iterator;
+}`);
+  const child=spawn(process.execPath,[join(__dirname,'claude_sdk_bridge.cjs'),join(folder,'sdk.mjs'),'unused'],{stdio:['pipe','pipe','pipe'],env:{...process.env,AGENTWORKS_CLI_LAUNCH:''}});
+  t.after(()=>child.kill());
+  const events=[];let pending='',stderr='';
+  const send=turn=>child.stdin.write(JSON.stringify({type:'prompt',text:'explicit input '+turn,keep_warm:true,next_prompt_capable:true,next_prompt:turn>1,next_prompt_turn:'host-'+turn})+'\n');
+  child.stderr.on('data',data=>stderr+=data);
+  child.stdout.on('data',data=>{pending+=data;while(pending.includes('\n')){
+    const end=pending.indexOf('\n'),event=JSON.parse(pending.slice(0,end));pending=pending.slice(end+1);events.push(event);
+    if(event.type==='result'&&event.result==='done 1')send(2);
+    if(event.type==='prompt_suggestion')send(3);
+  }});
+  const finished=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>code===0?resolve():reject(new Error(stderr||'bridge failed')))});
+  send(1);await finished;
+  const results=events.filter(event=>event.type==='result');
+  assert.deepEqual(results.map(event=>event.sample_enabled),[false,true,false]);
+  const suggestions=events.filter(event=>event.type==='prompt_suggestion');
+  assert.equal(suggestions.length,1);
+  assert.equal(suggestions[0].sdk_prompt_turn,'host-2');
+  assert.ok(events.indexOf(suggestions[0])>events.indexOf(results[1]));
+});

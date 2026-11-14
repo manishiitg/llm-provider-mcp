@@ -394,6 +394,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				completed = true
 				switch event.Turn.Status {
 				case "completed":
+					sampleCodexNextPrompt(ctx, s, r, thread, event.Turn.ID)
 					return codexAppResponse(s, joined(), usage), nil
 				case "interrupted":
 					return nil, context.Canceled
