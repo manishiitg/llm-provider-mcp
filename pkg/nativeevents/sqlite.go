@@ -92,7 +92,13 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 					for _, id := range agycli.NativeSubagentIDs(payload) {
 						if _, known := b.Next.Tasks[id]; !known {
 							b.Next.Tasks[id] = "launched"
-							emit(&b, llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: "subagent:" + id + ":started", Kind: "helper", State: "started", TaskID: id, ToolID: id, Name: "Subagent", HelperType: "invoke_subagent"})
+							// Both of a child's records belong to the turn that launched it, not the latest one scanned.
+							turn, origin := r.TurnID, r.Origin
+							if turn == "" {
+								turn, origin = b.Next.TurnID, b.Next.Origin
+							}
+							b.Next.Lineage[id] = Lineage{TurnID: turn, Origin: origin}
+							emit(&b, llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: "subagent:" + id + ":started", Kind: "helper", State: "started", TaskID: id, ToolID: id, Name: "Subagent", HelperType: "invoke_subagent", TurnID: turn, Origin: origin})
 						}
 					}
 				case 6:
@@ -164,7 +170,9 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 		for _, id := range ids {
 			if agycli.NativeSubagentSettled(filepath.Join(filepath.Dir(path), id+".db")) {
 				delete(b.Next.Tasks, id)
-				emit(&b, llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: "subagent:" + id + ":finished", Kind: "helper", State: "finished", TaskID: id, ToolID: id, Name: "Subagent", HelperType: "invoke_subagent"})
+				launch := b.Next.Lineage[id]
+				delete(b.Next.Lineage, id)
+				emit(&b, llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: "subagent:" + id + ":finished", Kind: "helper", State: "finished", TaskID: id, ToolID: id, Name: "Subagent", HelperType: "invoke_subagent", TurnID: launch.TurnID, Origin: launch.Origin})
 			}
 		}
 	}
