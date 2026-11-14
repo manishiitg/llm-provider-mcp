@@ -380,26 +380,30 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 	if c.sdkTransport {
-		var setupStream chan<- llmtypes.StreamChunk
-		if opts != nil {
-			setupStream = opts.StreamChan
+		var launch claudeSDKLaunch
+		// Adoption owns an already-running native turn: never reopen or configure it.
+		if sess == nil {
+			var setupStream chan<- llmtypes.StreamChunk
+			if opts != nil {
+				setupStream = opts.StreamChan
+			}
+			if err := llmtypes.PrepareCodingSDK(ctx, "claude-code", setupStream); err != nil {
+				return nil, err
+			}
+			sdkEntry, err := claudeSDKEntry()
+			if err != nil {
+				return nil, err
+			}
+			binaryIdentity, err := claudeSDKProgramIdentity(binPath)
+			if err != nil {
+				return nil, err
+			}
+			sdkIdentity, err := claudeSDKProgramIdentity(sdkEntry)
+			if err != nil {
+				return nil, err
+			}
+			launch = claudeSDKLaunchParts(c.modelID, currentInstructions, "", permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx), binaryIdentity, sdkIdentity, workingDir)
 		}
-		if err := llmtypes.PrepareCodingSDK(ctx, "claude-code", setupStream); err != nil {
-			return nil, err
-		}
-		sdkEntry, err := claudeSDKEntry()
-		if err != nil {
-			return nil, err
-		}
-		binaryIdentity, err := claudeSDKProgramIdentity(binPath)
-		if err != nil {
-			return nil, err
-		}
-		sdkIdentity, err := claudeSDKProgramIdentity(sdkEntry)
-		if err != nil {
-			return nil, err
-		}
-		launch := claudeSDKLaunchParts(c.modelID, currentInstructions, "", permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx), binaryIdentity, sdkIdentity, workingDir)
 		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts) && !idleCompact
 		if owner != "" && !idleCompact && sess == nil {
 			sess = takeKeptClaudeSDKSession(owner, launch, resumeSessionID)
