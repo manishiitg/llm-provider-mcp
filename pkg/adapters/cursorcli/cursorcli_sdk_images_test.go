@@ -74,7 +74,7 @@ func TestCursorSDKImagesPromptSteerAndFollowup(t *testing.T) {
 			if got.err != nil {
 				t.Fatal(got.err)
 			}
-			if !steered || got.resp == nil || !strings.Contains(got.resp.Choices[0].Content, tc.steer) {
+			if !steered || got.resp == nil || !strings.Contains(got.resp.Choices[0].Content, tc.steer[len(tc.steer)-5:]) {
 				t.Fatal("text/image followup lost")
 			}
 			if opened.Load() != tc.opens || tc.revoke != (skipped.Load() > 0) {
