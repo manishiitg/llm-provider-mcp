@@ -14,7 +14,7 @@ import (
 func TestCodexNextPromptUsesOnlyFencedNativeSampling(t *testing.T) {
 	for _, scenario := range []string{"prediction", "prediction_idle", "first", "near_limit", "old_program", "newer_turn"} {
 		t.Run(scenario, func(t *testing.T) {
-			s := &codexAppSession{owner: "chat", threadID: "thread", turnID: "turn"}
+			s := &codexAppSession{owner: "chat", threadID: "thread", turnID: "turn", model: "native-model"}
 			if scenario == "near_limit" {
 				s.rateLimits = &codexRateLimits{Primary: &codexRateLimitWindow{UsedPercent: 90}}
 			}
@@ -32,7 +32,7 @@ func TestCodexNextPromptUsesOnlyFencedNativeSampling(t *testing.T) {
 				if scenario == "old_program" {
 					return codexRPCMessage{Error: &codexRPCError{Code: -32601, Message: "unsupported"}}
 				}
-				return codexRPCMessage{Result: json.RawMessage(`{"text":"Check the diff"}`)}
+				return codexRPCMessage{Result: json.RawMessage(`{"sourceTurnId":"turn","responseId":"sample","text":"Check the diff","inputTokens":100,"cachedInputTokens":80,"outputTokens":5}`)}
 			})
 			s.rpc = rpc
 			done := make(chan llmtypes.NextPromptResult, 1)
@@ -55,6 +55,9 @@ func TestCodexNextPromptUsesOnlyFencedNativeSampling(t *testing.T) {
 					t.Fatal("skipped prediction still spent a request")
 				}
 				return
+			}
+			if scenario != "old_program" && (result.Usage == nil || result.Usage.ResponseID != "sample" || result.Usage.Model != "native-model" || result.Usage.Input != 100 || result.Usage.CachedInput != 80 || result.Usage.Output != 5) {
+				t.Fatalf("native sample usage lost (even a stale sample costs tokens): %+v", result.Usage)
 			}
 			if len(wire.requests) != 1 || wire.requests[0].Method != "thread/sample" {
 				t.Fatalf("sampling created other work: %+v", wire.requests)

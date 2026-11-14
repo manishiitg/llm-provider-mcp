@@ -19,6 +19,7 @@ func sampleCodexNextPrompt(ctx context.Context, s *codexAppSession, rpc *codexRP
 	}
 	s.mu.Lock()
 	epoch := s.promptEpoch
+	model := s.model
 	nearLimit := llmtypes.NextPromptNearLimit(codexStructuredRateLimitWindows(s.rateLimits))
 	s.mu.Unlock()
 	if !scope.Eligible || nearLimit {
@@ -39,14 +40,28 @@ func sampleCodexNextPrompt(ctx context.Context, s *codexAppSession, rpc *codexRP
 		sampleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		var reply struct {
-			Text *string `json:"text"`
+			Text        *string `json:"text"`
+			SourceTurn  string  `json:"sourceTurnId"`
+			ResponseID  string  `json:"responseId"`
+			Input       *int64  `json:"inputTokens"`
+			CachedInput *int64  `json:"cachedInputTokens"`
+			Output      *int64  `json:"outputTokens"`
 		}
 		err := rpc.call(sampleCtx, "thread/sample", map[string]any{"threadId": thread, "expectedTurnId": turn, "prompt": codexNextPromptInstruction, "effort": "low"}, &reply)
 		result := llmtypes.NextPromptResult{NativeThread: thread, NativeTurn: turn}
 		if err != nil {
 			result.Reason = "unsupported_or_stale"
-		} else if reply.Text != nil {
-			result.Text = *reply.Text
+		} else {
+			// An ephemeral sample is absent from the parent's native ledger.
+			// Retain its measured usage even when its hint is empty or stale.
+			if reply.ResponseID != "" && reply.Input != nil && reply.CachedInput != nil && reply.Output != nil && *reply.Input >= 0 && *reply.CachedInput >= 0 && *reply.CachedInput <= *reply.Input && *reply.Output >= 0 {
+				result.Usage = &llmtypes.NextPromptUsage{ResponseID: reply.ResponseID, Model: model, Input: *reply.Input, CachedInput: *reply.CachedInput, Output: *reply.Output}
+			}
+			if reply.SourceTurn != "" && reply.SourceTurn != turn {
+				result.Reason = "newer_turn"
+			} else if reply.Text != nil {
+				result.Text = *reply.Text
+			}
 		}
 		s.mu.Lock()
 		stale := s.threadID != thread || s.promptEpoch != epoch || s.rpc != rpc || (s.turnID != "" && s.turnID != turn)

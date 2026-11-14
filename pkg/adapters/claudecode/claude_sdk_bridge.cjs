@@ -360,6 +360,7 @@ async function main() {
         // Why a turn stays open, for the host log (counts only).
         event.sdk_hold = { unsettled: unsettled.size, moved_aside: movedAside.size, queued: event.queued_turn_count || 0, background: background.size, helpers: helpers.running() };
         if (!event.sdk_continues) {
+          settledPromptTurn = nextPromptTurn;
           turnActive = false; strayCheck = false;
           // Claude's own background tasks still run: keep the session so they keep running.
           park = !ended && (ownRunning().length > 0 || (keepWarm && !event.is_error));
