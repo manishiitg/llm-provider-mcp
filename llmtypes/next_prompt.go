@@ -20,6 +20,14 @@ type NextPromptResult struct {
 	HostTurn                 string
 	Text, Reason             string
 	NativeThread, NativeTurn string
+	Usage                    *NextPromptUsage
+}
+
+// NextPromptUsage is optional native sampler accounting, not prediction text.
+// Input includes CachedInput. Missing native counts are never invented.
+type NextPromptUsage struct {
+	ResponseID, Model          string
+	Input, CachedInput, Output int64
 }
 type nextPromptKey struct{}
 
