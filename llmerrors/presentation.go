@@ -2,8 +2,10 @@ package llmerrors
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Display is the server's concise, credential-masked explanation of a provider failure.
@@ -111,6 +113,39 @@ func ProviderDisplay(err error) Display {
 		d.Code = "input_required"
 		d.Message = "The agent needs your answer before it can continue."
 		d.NextStep = "Answer the pending question in this chat."
+	}
+	// Native account/model failures have specific next steps. Preserve these
+	// server-owned explanations rather than making every rejection look alike.
+	if typed != nil {
+		switch {
+		case typed.Provider == "agy-cli" && typed.Kind == KindUnknown && message == "Antigravity stopped this turn because of an error.":
+			d.Code = "provider_unavailable"
+			d.Message = message
+			d.NextStep = "Try again, or pick another model."
+		case typed.Provider == "agy-cli" && typed.Kind == KindQuotaExhausted:
+			d.Message = "You have reached your Antigravity quota for this period."
+			if !typed.RetryAt.IsZero() {
+				d.NextStep = "Try again after " + typed.RetryAt.UTC().Format(time.RFC3339) + "."
+			}
+		case (typed.Provider == "agy-cli" || typed.Provider == "pi-cli") && typed.Kind == KindModelNotFound:
+			label := "Antigravity"
+			if typed.Provider == "pi-cli" {
+				label = "Pi"
+			}
+			model := typed.Model
+			for _, rule := range displaySecrets {
+				model = rule.pattern.ReplaceAllString(model, rule.replacement)
+			}
+			model = strings.SplitN(model, "\n", 2)[0]
+			if len([]rune(model)) > 100 {
+				model = string([]rune(model)[:99]) + "…"
+			}
+			d.Message = fmt.Sprintf("%s model %q is not available for this account.", label, model)
+			d.NextStep = "Pick another model."
+		case typed.Provider == "pi-cli" && typed.Kind == KindAuth:
+			d.Message = "Pi is not signed in, or its API key is missing or invalid."
+			d.NextStep = "Run pi and use /login, or configure this provider's API key."
+		}
 	}
 	// Raw JSON, HTML and diagnostic wrappers belong in technical details.
 	if strings.HasPrefix(d.Message, "{") || strings.HasPrefix(d.Message, "<") || d.Code == "internal_error" {

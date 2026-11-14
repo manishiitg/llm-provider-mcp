@@ -42,16 +42,18 @@ type agyACPConfigResult struct {
 }
 
 type agyACPSession struct {
-	configOptions []agyACPConfigOption
-	turnMu        sync.Mutex
-	mu            sync.Mutex
-	rpc           *agyACP
-	sessionID     string
-	workdir       string
-	model         string
-	fingerprint   string
-	listener      chan agyACPMessage
-	release       func()
+	transcriptHome string
+	status         *llmtypes.StatusLine
+	configOptions  []agyACPConfigOption
+	turnMu         sync.Mutex
+	mu             sync.Mutex
+	rpc            *agyACP
+	sessionID      string
+	workdir        string
+	model          string
+	fingerprint    string
+	listener       chan agyACPMessage
+	release        func()
 }
 
 var agyACPSessions = struct {
@@ -184,7 +186,7 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 		cleanupSandbox()
 		close(r.exited)
 	}()
-	s := &agyACPSession{rpc: r, workdir: workdir, release: release}
+	s := &agyACPSession{rpc: r, workdir: workdir, transcriptHome: agyTranscriptHome(opts), release: release}
 	go s.pump()
 	initCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
@@ -451,6 +453,7 @@ func (a *AgyCLIAdapter) consumeAgyACPTurn(ctx context.Context, s *agyACPSession,
 			Total       int `json:"totalTokens"`
 		} `json:"usage"`
 	}
+	outcome := beginAgyACPOutcome(s.transcriptHome, s.sessionID)
 	complete := make(chan error, 1)
 	go func() {
 		// The turn's own lifetime, not ctx: on Stop it is cancelled and waits for agy's answer.
@@ -476,6 +479,8 @@ func (a *AgyCLIAdapter) consumeAgyACPTurn(ctx context.Context, s *agyACPSession,
 				Title      string          `json:"title"`
 				Status     string          `json:"status"`
 				RawInput   json.RawMessage `json:"rawInput"`
+				Used       *int            `json:"used"`
+				Size       *int            `json:"size"`
 				Entries    json.RawMessage `json:"entries"`
 				RawOutput  json.RawMessage `json:"rawOutput"`
 			} `json:"update"`
@@ -500,10 +505,30 @@ func (a *AgyCLIAdapter) consumeAgyACPTurn(ctx context.Context, s *agyACPSession,
 				text.WriteString(content.Text)
 			}
 			emit(llmtypes.StreamChunk{Type: kind, Content: content.Text, Metadata: map[string]any{"agy_session_id": s.sessionID, "agy_stream_source": "acp", llmtypes.ContentDeltaMetadataKey: true}})
+		case "usage_update":
+			if u.Used != nil && *u.Used >= 0 {
+				status := &llmtypes.StatusLine{Provider: "agy-cli", Model: s.model, Metadata: map[string]interface{}{"agy_session_id": s.sessionID}}
+				size := 0
+				if u.Size != nil && *u.Size > 0 {
+					size = *u.Size
+				}
+				status.SetContextUsage(*u.Used, size)
+				if *u.Used == 0 {
+					status.Metadata[llmtypes.ContextUsedTokensMetaKey] = 0
+					if size > 0 {
+						status.Metadata[llmtypes.ContextWindowTokensMetaKey] = size
+					}
+				}
+				s.mu.Lock()
+				s.status = status
+				s.mu.Unlock()
+				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeStatusLine, StatusLine: status, Metadata: meta})
+				log.Printf("[AGY_CONTEXT] session=%s used=%d size=%d", s.sessionID, *u.Used, size)
+			}
 		case "plan":
 			raw, _ := json.Marshal(map[string]json.RawMessage{"entries": u.Entries})
 			if plan, ok := llmtypes.ParseCodingAgentPlan(raw, "entries"); ok {
-				plan.Provider, plan.PlanID = "agycli", s.sessionID
+				plan.Provider, plan.PlanID = "agy-cli", s.sessionID
 				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeCodingAgentPlan, CodingAgentPlan: plan, Metadata: meta})
 			}
 		case "tool_call", "tool_call_update":
@@ -545,11 +570,14 @@ func (a *AgyCLIAdapter) consumeAgyACPTurn(ctx context.Context, s *agyACPSession,
 			for len(events) > 0 {
 				handle(<-events)
 			}
-			if err != nil {
-				return nil, err
-			}
 			if cancelled || result.StopReason == "cancelled" {
 				return nil, context.Canceled
+			}
+			if err != nil {
+				return nil, agyACPRPCFailure(s.model, s.sessionID, err)
+			}
+			if failure := outcome.failure(s.model, result.StopReason); failure != nil {
+				return nil, failure
 			}
 			var usage *llmtypes.Usage
 			if u := result.Usage; u != nil {
@@ -611,6 +639,15 @@ func agyACPResponse(s *agyACPSession, text string, usage *llmtypes.Usage) *llmty
 		gi.CachedContentTokens = usage.CacheTokens
 		gi.ReasoningTokens = usage.ReasoningTokens
 	}
+	s.mu.Lock()
+	if s.status != nil {
+		for _, key := range []string{llmtypes.ContextUsedTokensMetaKey, llmtypes.ContextWindowTokensMetaKey} {
+			if value, ok := s.status.Metadata[key]; ok {
+				gi.Additional[key] = value
+			}
+		}
+	}
+	s.mu.Unlock()
 	llmtypes.AttachCodingProviderSessionHandle(gi, llmtypes.CodingProviderSessionHandle{
 		Provider: "agy-cli", Transport: llmtypes.CodingProviderTransportACP, NativeSessionID: s.sessionID,
 		WorkingDir: s.workdir, Model: s.model, Status: llmtypes.CodingProviderSessionStatusIdle,
@@ -680,7 +717,7 @@ func (s *agyACPSession) applySelection(ctx context.Context, model, modelOption, 
 	if s.model != model {
 		var result agyACPConfigResult
 		if err := s.rpc.call(ctx, "session/set_config_option", map[string]any{"sessionId": s.sessionID, "configId": "model", "value": modelOption}, &result); err != nil {
-			return err
+			return agyACPRPCFailure(model, s.sessionID, err)
 		}
 		s.rememberConfigOptions(result.ConfigOptions)
 		s.model = model

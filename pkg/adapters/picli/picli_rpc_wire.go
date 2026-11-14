@@ -27,6 +27,10 @@ type piRPCRecord struct {
 	Message json.RawMessage `json:"message"`
 	Raw     json.RawMessage `json:"-"`
 }
+type piRPCCommandError struct{ Command, Message string }
+
+func (e *piRPCCommandError) Error() string { return fmt.Sprintf("Pi RPC %s: %s", e.Command, e.Message) }
+
 type piRPC struct {
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
@@ -75,7 +79,7 @@ func (r *piRPC) call(ctx context.Context, command string, params map[string]any,
 			if command == "steer" {
 				return fmt.Errorf("%w: Pi rejected steer", llmtypes.ErrCodingAgentInputNotSent)
 			}
-			return fmt.Errorf("Pi RPC %s: %s", command, msg.Error)
+			return &piRPCCommandError{Command: command, Message: msg.Error}
 		}
 		if result != nil && len(msg.Data) > 0 {
 			return json.Unmarshal(msg.Data, result)

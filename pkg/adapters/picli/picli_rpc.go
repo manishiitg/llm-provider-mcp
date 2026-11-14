@@ -249,6 +249,7 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	if owner == "" {
 		owner = "pi-rpc-" + piRandomHex(12)
 	}
+	defer func() { err = piRPCRequestFailure(p.GetModelID(), owner, err, false) }()
 	persistent := piPersistentInteractiveFromOptions(opts)
 	piRPCSessions.Lock()
 	s := piRPCSessions.sessions[owner]
