@@ -13,6 +13,26 @@ async function main() {
   process.argv[1] = process.argv[2];
   const { Agent, Cursor } = require(process.argv[2]);
   let agent, run, start, store, followups = [], early = [], busy = false;
+  // PLAT-746-999: observe only metadata after the native turn boundary. Keep
+  // the last run's status listener across the foreground result: a completion
+  // arriving while the bridge is idle must still be visible. No wake policy.
+  let stopRunObservation;
+  const eventTypes = new Set(['system', 'user', 'assistant', 'tool_call', 'thinking', 'status', 'request', 'task', 'usage',
+    'text-delta', 'thinking-delta', 'thinking-completed', 'tool-call-started', 'tool-call-completed',
+    'tool-call-delta', 'user-message-appended', 'partial-tool-call', 'token-delta', 'summary',
+    'summary-started', 'summary-completed', 'shell-output-delta', 'turn-ended', 'step-started',
+    'step-completed', 'tool-requests-listed', 'snapshot', 'changed', 'wait-resolved', 'subscribe-unavailable']);
+  const statuses = new Set(['running', 'finished', 'error', 'cancelled', 'CREATING', 'RUNNING', 'FINISHED', 'ERROR', 'CANCELLED', 'EXPIRED']);
+  const metaID = value => typeof value === 'string' && /^[a-zA-Z0-9_:.-]{1,160}$/.test(value) ? value : undefined;
+  const observe = (state, kind, event, status) => {
+    if (!state.afterEnd) return;
+    emit({ type: 'background_meta', kind, event_type: eventTypes.has(event?.type) ? event.type : 'unknown',
+      agent_id: metaID(event?.agent_id) ?? metaID(agent?.agentId), run_id: metaID(event?.run_id) ?? metaID(state.run?.id),
+      parent_run_id: metaID(state.run?.id),
+      call_id: metaID(event?.call_id ?? event?.callId),
+      status: statuses.has(status) ? status : undefined, phase: state.phase });
+  };
+
   // This process belongs to one account; keep a successful discovery across starts/resumes. The lookup begins as
   // the bridge starts, so a start rarely waits, and never keeps a failed or empty result: the next start asks again
   // (PLAT-872-64: an empty result cached for the bridge's life sent the bare model without the account's fixed
@@ -180,6 +200,7 @@ async function main() {
         // nothing new starts for a short while, the answer already streamed is the reply: the run is
         // cancelled and the turn finishes. A run that ends with the SDK's own "no progress" error after
         // the turn ended has finished too.
+        const observation = { afterEnd: false, phase: 'foreground', run: undefined };
         let turnEnded = false, quietEnded = false, quiet, giveUp;
         const outstandingWork = new Set(), detachedWork = new Set();
         const hasWork = () => outstandingWork.size > 0 || detachedWork.size > 0;
@@ -202,6 +223,8 @@ async function main() {
           // Reassert the selected variant on every turn, including resumed/follow-up runs.
           model: start.model,
           onDelta: ({ update }) => {
+            if (update.type === 'turn-ended') observation.afterEnd = true;
+            observe(observation, 'delta', update);
             // The SDK exposes call lifetimes, not a separate background roster.
             // A detached task remains known work until the native run finishes.
             if (update.type === 'tool-call-started' && ['shell', 'task'].includes(update.toolCall?.type)) {
@@ -240,13 +263,29 @@ async function main() {
           run = await agent.send(text, sendOptions);
         }
         const current = run;
+        observation.run = current;
+        stopRunObservation?.();
+        stopRunObservation = undefined;
+        // Run.onDidChangeStatus is part of the official SDK 1.1 Run interface.
+        // Missing support in a fixture/older bridge is metadata, not a failure.
+        if (typeof current.onDidChangeStatus === 'function') {
+          try {
+            const stop = current.onDidChangeStatus(status => observe(observation, 'status', { type: 'changed' }, status));
+            stopRunObservation = () => { try { stop?.(); } catch { /* Observation cannot change run behavior. */ } };
+          } catch { observe(observation, 'status', { type: 'subscribe-unavailable' }); }
+        } else observe(observation, 'status', { type: 'subscribe-unavailable' });
+        observe(observation, 'status', { type: 'snapshot' }, current.status);
         last = await Promise.race([(async () => {
           for await (const event of current.stream()) {
+            observe(observation, 'stream', event, event.type === 'status' ? event.status : undefined);
             if (event.type === 'tool_call') emit({ type: 'tool', call_id: event.call_id, name: event.name, status: event.status, args: event.args, result: event.result });
             else if (event.type === 'usage') emit({ type: 'usage', usage: event.usage });
           }
-          return current.wait();
+          const result = await current.wait();
+          observe(observation, 'status', { type: 'wait-resolved' }, result.status);
+          return result;
         })(), gaveUp]);
+        observation.phase = 'after_result';
         stopQuiet();
         if (turnEnded && !hasWork() && last.status !== 'finished' && (quietEnded || /repeated resume attempts made no progress/i.test(short(last.error)))) {
           if (!quietEnded) emit({ type: 'turn_end_settled', action: 'no_progress', status: last.status });
@@ -267,5 +306,6 @@ async function main() {
     } finally { busy = false; run = undefined; drop(); }
   }
   await agent?.[Symbol.asyncDispose]?.();
+  stopRunObservation?.();
 }
 main().then(() => process.exit(0), error => { emit({ type: 'fatal', error: short(error) }); process.exit(1); });
