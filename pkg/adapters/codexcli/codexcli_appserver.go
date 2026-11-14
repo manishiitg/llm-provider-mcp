@@ -430,7 +430,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	if idleCompact {
 		return c.compactAppThread(ctx, s, r, thread, emit)
 	}
-	goalCommand, hasGoalCommand := llmtypes.NativeGoalCommandFromContext(ctx)
+	goalCommand, hasGoalCommand := llmtypes.NativeGoalCommandForSession(ctx, owner)
 	activateGoal := false
 	if hasGoalCommand {
 		var reply *llmtypes.ContentResponse

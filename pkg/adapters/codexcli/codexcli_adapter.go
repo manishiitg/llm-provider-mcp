@@ -91,7 +91,7 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("unsupported Codex native transport %q", opts.CodingProviderTransport)
 	}
 	if tmux {
-		if _, ok := llmtypes.NativeGoalCommandFromContext(ctx); ok {
+		if _, ok := llmtypes.NativeGoalCommandForSession(ctx, codexInteractiveSessionIDFromOptions(opts)); ok {
 			if opts.StreamChan != nil {
 				close(opts.StreamChan)
 			}

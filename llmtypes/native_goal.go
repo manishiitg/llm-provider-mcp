@@ -26,6 +26,7 @@ type NativeGoalUpdate struct {
 }
 
 type NativeGoalCommand struct {
+	SessionID string `json:"session_id"`
 	Action    string `json:"action"`
 	Objective string `json:"objective,omitempty"`
 }
@@ -41,6 +42,13 @@ func WithNativeGoalCommand(ctx context.Context, command NativeGoalCommand) conte
 func NativeGoalCommandFromContext(ctx context.Context) (NativeGoalCommand, bool) {
 	command, ok := ctx.Value(nativeGoalCommandKey{}).(NativeGoalCommand)
 	return command, ok
+}
+
+// A parent may delegate using its context. Its goal command must never
+// become a child's command or change the child's retry policy.
+func NativeGoalCommandForSession(ctx context.Context, sessionID string) (NativeGoalCommand, bool) {
+	command, ok := NativeGoalCommandFromContext(ctx)
+	return command, ok && sessionID != "" && command.SessionID == sessionID
 }
 
 type NativeGoalUnavailableError struct{ Program string }
