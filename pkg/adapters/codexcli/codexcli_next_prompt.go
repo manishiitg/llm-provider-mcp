@@ -31,6 +31,10 @@ func sampleCodexNextPrompt(ctx context.Context, s *codexAppSession, rpc *codexRP
 	// Completion must not wait for the optional prediction. The result remains
 	// fenced by the exact native turn and the host's captured platform turn.
 	go func() {
+		if !scope.Current() {
+			scope.Finish(llmtypes.NextPromptResult{Reason: "newer_input_or_stopped"})
+			return
+		}
 		sampleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		var reply struct {

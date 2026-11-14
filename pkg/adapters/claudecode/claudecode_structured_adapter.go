@@ -467,7 +467,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			scope.Finish(llmtypes.NextPromptResult{Reason: "first_or_unattended_turn"})
 		}
 		request := map[string]any{"type": "prompt", "text": prompt, "keep_warm": keepAllowed,
-			"next_prompt_capable": scope.Complete != nil, "next_prompt": scope.Eligible, "next_prompt_turn": scope.TurnID}
+			"next_prompt_capable": scope.Complete != nil, "next_prompt": scope.Eligible && scope.Current(), "next_prompt_turn": scope.TurnID}
 		if adoptWake {
 			request = map[string]any{"type": "adopt", "keep_warm": keepAllowed}
 		}
