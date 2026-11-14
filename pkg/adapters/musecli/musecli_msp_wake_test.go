@@ -24,6 +24,17 @@ func TestMuseMSPWakeTurnReplyReachesTheHost(t *testing.T) {
 	if len(got) != 1 || got[0].Owner != "chat-1" || got[0].Text != "Build finished: 3 tests failed." || len(got[0].Sources) != 1 || got[0].Sources[0] != "CI build" {
 		t.Fatalf("wake reply = %+v", got)
 	}
+	// PLAT-746-941: a completed native wake with no assistant text must still
+	// reach the shared continuation queue; duplicate terminal events cannot wake twice.
+	for _, terminal := range []string{"completed", "cancelled", "failed"} {
+		a.handleIdleMuseMSP(s, event("turn/started", map[string]any{"turnId": terminal}))
+		a.handleIdleMuseMSP(s, event("turn/completed", map[string]any{"turnId": terminal, "terminal": terminal}))
+		a.handleIdleMuseMSP(s, event("turn/completed", map[string]any{"turnId": terminal, "terminal": terminal}))
+	}
+	if len(got) != 4 || got[1].Text != "" || got[1].Terminal != "completed" || got[2].Terminal != "cancelled" || got[3].Terminal != "failed" || len(s.wake) != 0 {
+		t.Fatalf("empty/terminal wake handoff = %+v; pending=%d", got, len(s.wake))
+	}
+
 }
 
 // Muse's inputTokens already includes the cached part; adding cacheRead again doubled every msp turn's prompt
