@@ -594,6 +594,10 @@ func (a *MuseCLIAdapter) handleIdleMuseMSP(s *museMSPSession, msg museRPCMessage
 		if json.Unmarshal(msg.Params, &p) == nil && p.Item.Kind == "agentMessage" && strings.TrimSpace(p.Item.Text) != "" {
 			log.Printf("[MUSE_MSP] session=%s reply between chat turns (turn %s): %d chars", s.sessionID, p.Item.TurnID, len(p.Item.Text))
 			s.mu.Lock()
+			if p.Item.TurnID == s.turnID || p.Item.TurnID == s.lastForegroundTurnID {
+				s.mu.Unlock()
+				return
+			}
 			if s.wake == nil {
 				s.wake = map[string]*museMSPWake{}
 			}
