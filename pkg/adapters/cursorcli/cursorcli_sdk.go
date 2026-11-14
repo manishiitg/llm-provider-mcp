@@ -38,6 +38,7 @@ var cursorSDKBridge []byte
 const cursorSDKMarker = "\x01aw "
 
 type cursorSDKEvent struct {
+	DurationMS  int64           `json:"duration_ms"`
 	Type        string          `json:"type"`
 	InputID     string          `json:"input_id"`
 	RunID       string          `json:"run_id"`
@@ -221,6 +222,11 @@ func (p *cursorSDKProcess) close() {
 
 // read keeps only marked protocol lines: the SDK logs to the same stdout, and that text is never kept.
 func (p *cursorSDKProcess) read(stdout io.Reader) {
+	defer func() {
+		if p.observe != nil {
+			p.observe(cursorSDKEvent{Type: "helper_runtime_closed"})
+		}
+	}()
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -241,7 +247,7 @@ func (p *cursorSDKProcess) read(stdout io.Reader) {
 			p.fetchImages(event)
 			continue
 		}
-		if event.Type == "background_meta" {
+		if event.Type == "background_meta" || event.Type == "helper" {
 			// Metadata never enters the foreground event queue: the bridge
 			// can report a late signal when no prompt is consuming it.
 			if p.observe != nil {
@@ -445,7 +451,12 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		}()
 	}
 	p := &cursorSDKProcess{cmd: cmd, stdin: stdin, events: make(chan cursorSDKEvent, 4096), done: make(chan struct{}), exited: make(chan struct{}), acks: map[string]chan bool{}, stop: stop}
+	observeHelpers := c.sdkHelperObserver(owner)
 	p.observe = func(event cursorSDKEvent) {
+		if event.Type == "helper" || event.Type == "helper_runtime_closed" {
+			observeHelpers(event)
+			return
+		}
 		if c.logger != nil {
 			c.logger.Infof("[CURSOR_BACKGROUND] owner=%s agent=%s run=%s parent_run=%s call=%s action=observed kind=%s event=%s status=%s phase=%s", owner, event.AgentID, event.RunID, event.ParentRunID, event.CallID, event.Kind, event.EventType, event.Status, event.Phase)
 		}

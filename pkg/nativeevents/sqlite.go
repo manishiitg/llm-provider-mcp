@@ -27,6 +27,17 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 			if r.Kind == "turn" {
 				b.Next.TurnID, b.Next.Origin = r.ID, "human"
 			}
+			if r.Kind == "helper" {
+				key := "helper:" + r.TaskID
+				if r.State == "started" {
+					b.Next.Lineage[key] = Lineage{TurnID: b.Next.TurnID, Origin: b.Next.Origin}
+				}
+				launch := b.Next.Lineage[key]
+				r.TurnID, r.Origin = launch.TurnID, launch.Origin
+				if r.State != "started" {
+					delete(b.Next.Lineage, key)
+				}
+			}
 			emit(&b, r)
 		}
 		b.Next.LastID = last
@@ -113,6 +124,9 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 			case 17:
 				r.Kind, r.State = "error", "failed"
 			case 101:
+				if id := agycli.NativeSubagentReceiptID(payload); id != "" && b.Next.Tasks[id] == "launched" {
+					b.Next.Tasks[id] = "notified"
+				}
 				r.Kind, r.State = "notice", "observed"
 			default:
 				b.Unknown["step:"+strconv.Itoa(kind)]++
@@ -162,7 +176,7 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 		// A launched child whose own conversation has ended closes its row.
 		ids := make([]string, 0, len(b.Next.Tasks))
 		for id, state := range b.Next.Tasks {
-			if state == "launched" {
+			if state == "notified" {
 				ids = append(ids, id)
 			}
 		}

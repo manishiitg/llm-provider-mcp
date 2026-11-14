@@ -94,9 +94,10 @@ func ReadNativeRecordRows(ctx context.Context, path, sessionID, after string) ([
 		case "tool":
 			// A finished task call closes its subagent row (the same row Claude's helpers use).
 			var blocks []struct {
-				Type       string `json:"type"`
-				ToolCallID string `json:"toolCallId"`
-				ToolName   string `json:"toolName"`
+				Type       string          `json:"type"`
+				ToolCallID string          `json:"toolCallId"`
+				ToolName   string          `json:"toolName"`
+				Result     json.RawMessage `json:"result"`
 			}
 			if json.Unmarshal(msg.Content, &blocks) == nil {
 				for _, block := range blocks {
@@ -104,7 +105,9 @@ func ReadNativeRecordRows(ctx context.Context, path, sessionID, after string) ([
 						out := r
 						out.ID += ":" + block.ToolCallID
 						out.ToolID, out.Name = block.ToolCallID, block.ToolName
-						records = append(records, cursorSubagentRecord(out, "finished"))
+						if state := cursorTaskResultState(block.Result); state != "" {
+							records = append(records, cursorSubagentRecord(out, state))
+						}
 					}
 				}
 			}
@@ -133,4 +136,25 @@ func cursorSubagentRecord(tool llmtypes.NativeRecord, state string) llmtypes.Nat
 	tool.Kind, tool.State, tool.TaskID, tool.Text = "helper", state, tool.ToolID, ""
 	tool.Name, tool.HelperType = "Subagent", "task"
 	return tool
+}
+
+// A successful task tool may acknowledge only a background launch. Only the
+// explicit native success/isBackground=false shape is foreground completion.
+func cursorTaskResultState(raw json.RawMessage) string {
+	var result struct {
+		Status string `json:"status"`
+		Value  struct {
+			IsBackground *bool `json:"isBackground"`
+		} `json:"value"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return ""
+	}
+	if result.Status == "error" {
+		return "failed"
+	}
+	if result.Status == "success" && result.Value.IsBackground != nil && !*result.Value.IsBackground {
+		return "finished"
+	}
+	return ""
 }

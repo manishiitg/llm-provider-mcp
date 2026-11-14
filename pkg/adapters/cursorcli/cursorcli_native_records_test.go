@@ -32,7 +32,7 @@ func TestCursorNativeSubagentRowOpensAndCloses(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	path := writeCursorStoreFixture(t, "/project", "native", []string{
 		`{"role":"assistant","content":[{"type":"tool-call","toolCallId":"call-1","toolName":"task"},{"type":"tool-call","toolCallId":"call-2","toolName":"read"}]}`,
-		`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"task","result":"done"},{"type":"tool-result","toolCallId":"call-2","toolName":"read","result":"x"}]}`,
+		`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"task","result":{"status":"success","value":{"isBackground":false}}},{"type":"tool-result","toolCallId":"call-2","toolName":"read","result":"x"}]}`,
 	})
 	rows, _, err := ReadNativeRecordRows(context.Background(), path, "native", "")
 	if err != nil {
@@ -46,5 +46,16 @@ func TestCursorNativeSubagentRowOpensAndCloses(t *testing.T) {
 	}
 	if len(helpers) != 2 || helpers[0] != "call-1:started" || helpers[1] != "call-1:finished" {
 		t.Fatalf("want only the task call's row to open and close, got %v", helpers)
+	}
+}
+
+func TestCursorTaskLaunchAcknowledgementIsNotCompletion(t *testing.T) {
+	for _, raw := range []string{`{"status":"success","value":{"isBackground":true}}`, `"launched"`, `{"status":"success","value":{}}`} {
+		if got := cursorTaskResultState([]byte(raw)); got != "" {
+			t.Fatalf("launch/unknown closed helper: %s", got)
+		}
+	}
+	if got := cursorTaskResultState([]byte(`{"status":"error","error":{"message":"private"}}`)); got != "failed" {
+		t.Fatalf("native error did not close helper: %s", got)
 	}
 }

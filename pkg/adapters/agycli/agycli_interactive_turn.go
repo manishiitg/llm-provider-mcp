@@ -360,13 +360,13 @@ func agyTurnCompactions(session *agyInteractiveSession, conversationID string, i
 // starts at its matching user row; rows before that receipt cannot satisfy
 // answer or completion, even in a resumed conversation.
 type agyTurnRecord struct {
-	transcriptHome string
-	userIdx        int
-	lastIdx        int
-	lastType       int
-	lastStatus     int
-	answer         string
-	finalAnswer    string
+	transcriptDir string
+	userIdx       int
+	lastIdx       int
+	lastType      int
+	lastStatus    int
+	answer        string
+	finalAnswer   string
 	// executorError is the text of a finished AGY error step (type 17,
 	// "Agent execution terminated due to error ..."): AGY itself ended the
 	// turn, for example on an upstream 500. Empty when there is none, or when
@@ -388,19 +388,21 @@ type agyTurnRecord struct {
 }
 
 func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accountHome ...string) (agyTurnRecord, error) {
-	record := agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}, compactionPendingIdx: -1}
-	if prompt == "" {
-		record.userIdx = sinceIdx
-	}
 	if conversationID == "" {
-		return record, nil
+		return agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}, compactionPendingIdx: -1}, nil
 	}
 	home, err := agyHome(accountHome...)
 	if err != nil {
-		return record, err
+		return agyTurnRecord{}, err
 	}
-	record.transcriptHome = home
-	path := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", conversationID+".db")
+	return agyReadTurnRecordFromPath(conversationID, sinceIdx, prompt, filepath.Join(home, ".gemini", "antigravity-cli", "conversations", conversationID+".db"))
+}
+
+func agyReadTurnRecordFromPath(conversationID string, sinceIdx int, prompt, path string) (agyTurnRecord, error) {
+	record := agyTurnRecord{userIdx: -1, lastIdx: -1, subagents: map[string]bool{}, compactionPendingIdx: -1, transcriptDir: filepath.Dir(path)}
+	if prompt == "" {
+		record.userIdx = sinceIdx
+	}
 	tmpPath, cleanup, err := agyCopyDBFile(path)
 	if os.IsNotExist(err) {
 		return record, nil
@@ -442,13 +444,9 @@ func agyReadTurnRecord(conversationID string, sinceIdx int, prompt string, accou
 			}
 		}
 		if stepType == 101 {
-			if notice, ok := agyProtoSubmessage(payload, 114); ok {
-				if message, ok := agyProtoSubmessage(notice, 4); ok {
-					if sender, ok := agyProtoStringField(message, 3); ok {
-						if _, spawned := record.subagents[sender]; spawned {
-							record.subagents[sender] = true
-						}
-					}
+			if sender := NativeSubagentReceiptID(payload); sender != "" {
+				if _, spawned := record.subagents[sender]; spawned {
+					record.subagents[sender] = true
 				}
 			}
 		}

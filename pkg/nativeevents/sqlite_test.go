@@ -112,59 +112,85 @@ func TestAgySubagentRowOpensAndClosesWithItsChild(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB, status INTEGER)`); err != nil {
+		if _, err = db.Exec(`CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB, status INTEGER)`); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { db.Close() })
 		return db
 	}
-	parent, child := open("parent.db"), open("child1.db")
-	payload := protowire.AppendBytes(protowire.AppendTag(nil, 10, protowire.BytesType), protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), "child1"))
-	for _, field := range []protowire.Number{143, 2, 6, 2, 140} {
-		payload = protowire.AppendBytes(protowire.AppendTag(nil, field, protowire.BytesType), payload)
+	wrap := func(field protowire.Number, inner []byte) []byte {
+		return protowire.AppendBytes(protowire.AppendTag(nil, field, protowire.BytesType), inner)
 	}
-	if _, err := parent.Exec(`INSERT INTO steps VALUES(1,14,x'',3)`); err != nil {
-		t.Fatal(err)
+	invoke := func(id string) []byte {
+		p := wrap(10, wrap(1, []byte(id)))
+		for _, f := range []protowire.Number{143, 2, 6, 2, 140} {
+			p = wrap(f, p)
+		}
+		return p
 	}
-	if _, err := parent.Exec(`INSERT INTO steps VALUES(2,132,?,3)`, payload); err != nil {
-		t.Fatal(err)
+	receipt := func(id string) []byte { return wrap(114, wrap(4, wrap(3, []byte(id)))) }
+	answer := wrap(20, wrap(1, []byte("done")))
+	insert := func(db *sql.DB, idx, kind, status int, payload []byte) {
+		if _, err := db.Exec(`INSERT INTO steps VALUES(?,?,?,?)`, idx, kind, payload, status); err != nil {
+			t.Fatal(err)
+		}
 	}
-	const launchTurn = "step:1"
-	if _, err := child.Exec(`INSERT INTO steps VALUES(1,15,x'',1)`); err != nil {
-		t.Fatal(err)
+	parent, child, grand := open("parent.db"), open("child1.db"), open("grand.db")
+	insert(parent, 1, 14, 3, nil)
+	insert(parent, 2, 132, 3, invoke("child1"))
+	insert(child, 0, 132, 3, invoke("grand"))
+	insert(child, 1, 15, 1, answer)
+	insert(grand, 1, 15, 1, answer)
+	read := func(c Cursor) Batch {
+		b, err := Read(context.Background(), "agy-cli", "native", filepath.Join(dir, "parent.db"), c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
 	}
 	states := func(b Batch) (out []string) {
 		for _, r := range b.Records {
 			if r.Kind == "helper" {
+				if r.TurnID != "step:1" {
+					t.Fatalf("lost launch turn: %q", r.TurnID)
+				}
 				out = append(out, r.TaskID+":"+r.State)
 			}
 		}
-		return out
+		return
 	}
-	b, err := Read(context.Background(), "agy-cli", "native", filepath.Join(dir, "parent.db"), Cursor{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	b := read(Cursor{})
 	if got := states(b); len(got) != 1 || got[0] != "child1:started" {
-		t.Fatalf("launch opens one row and the unfinished child keeps it open, got %v", got)
+		t.Fatalf("start=%v", got)
 	}
 	if _, err := child.Exec(`UPDATE steps SET status=3 WHERE idx=1`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parent.Exec(`INSERT INTO steps VALUES(3,14,x'',3)`); err != nil { // a later turn begins
+	insert(parent, 3, 14, 3, nil) // A later parent turn must not steal the completion.
+	b = read(b.Next)
+	if got := states(b); len(got) != 0 {
+		t.Fatalf("child closed before parent receipt: %v", got)
+	}
+	insert(parent, 4, 101, 3, receipt("child1"))
+	b = read(b.Next)
+	if got := states(b); len(got) != 0 {
+		t.Fatalf("interim child answer hid outstanding descendant: %v", got)
+	}
+	if _, err := grand.Exec(`UPDATE steps SET status=3`); err != nil {
 		t.Fatal(err)
 	}
-	b, err = Read(context.Background(), "agy-cli", "native", filepath.Join(dir, "parent.db"), b.Next)
-	if err != nil {
-		t.Fatal(err)
+	b = read(b.Next)
+	if got := states(b); len(got) != 0 {
+		t.Fatalf("descendant closed before its receipt: %v", got)
 	}
+	insert(child, 2, 101, 3, receipt("grand"))
+	insert(child, 3, 15, 3, answer)
+	b = read(b.Next)
 	if got := states(b); len(got) != 1 || got[0] != "child1:finished" {
-		t.Fatalf("the finished child closes its row once, got %v", got)
+		t.Fatalf("finish=%v", got)
 	}
-	// Both records carry the turn that launched the child: the first turn here, though a later turn was scanned since.
-	for _, r := range b.Records {
-		if r.Kind == "helper" && r.TurnID != launchTurn {
-			t.Fatalf("the finish lost the launching turn: %q, want %q", r.TurnID, launchTurn)
-		}
+	b = read(b.Next)
+	if got := states(b); len(got) != 0 {
+		t.Fatalf("completion replayed: %v", got)
 	}
 }

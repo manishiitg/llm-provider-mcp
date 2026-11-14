@@ -229,6 +229,14 @@ async function main() {
         const observation = { afterEnd: false, phase: 'foreground', run: undefined };
         let turnEnded = false, quietEnded = false, quiet, giveUp;
         const outstandingWork = new Set(), detachedWork = new Set();
+        const pendingHelpers = [];
+        const helper = (callId, status, durationMs) => {
+          if (!metaID(callId)) return;
+          const row = {type:'helper',agent_id:metaID(agent.agentId),call_id:callId,status,
+            duration_ms:Number.isFinite(durationMs) && durationMs>=0 ? durationMs : undefined};
+          if (!observation.run) pendingHelpers.push(row);
+          else emit({...row,run_id:metaID(observation.run.id)});
+        };
         const hasWork = () => outstandingWork.size > 0 || detachedWork.size > 0;
         const stopQuiet = () => { clearTimeout(quiet); quiet = undefined; };
         const quietMs = start.turn_end_quiet_ms ?? 30000;
@@ -251,6 +259,16 @@ async function main() {
           onDelta: ({ update }) => {
             if (update.type === 'turn-ended') observation.afterEnd = true;
             observe(observation, 'delta', update);
+            if (update.toolCall?.type === 'task') {
+              if (update.type === 'tool-call-started') helper(update.callId,'started');
+              if (update.type === 'tool-call-completed') {
+                const result = update.toolCall.result;
+                if (result?.status === 'error') helper(update.callId,'failed');
+                else if (result?.status === 'success' && result.value?.isBackground === false) helper(update.callId,'finished',result.value.durationMs);
+                else if (result?.status === 'success' && result.value?.isBackground === true) helper(update.callId,'launch_ack');
+                else helper(update.callId,'unreported');
+              }
+            }
             // The SDK exposes call lifetimes, not a separate background roster.
             // A detached task remains known work until the native run finishes.
             if (update.type === 'tool-call-started' && ['shell', 'task'].includes(update.toolCall?.type)) {
@@ -290,6 +308,7 @@ async function main() {
         }
         const current = run;
         observation.run = current;
+        for (const row of pendingHelpers) emit({...row,run_id:metaID(current.id)}); pendingHelpers.length=0;
         stopRunObservation?.();
         stopRunObservation = undefined;
         // Run.onDidChangeStatus is part of the official SDK 1.1 Run interface.

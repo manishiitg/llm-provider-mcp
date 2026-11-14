@@ -1,6 +1,7 @@
 package agycli
 
 import (
+	"path/filepath"
 	"strings"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -51,7 +52,7 @@ func agyPendingNativeSubagents(record agyTurnRecord, depth int) bool {
 		if !notified {
 			return true
 		}
-		child, err := agyReadTurnRecord(id, -1, "", record.transcriptHome)
+		child, err := agyReadTurnRecordFromPath(id, -1, "", filepath.Join(record.transcriptDir, id+".db"))
 		if err != nil || child.lastType != agyStepAssistant || child.lastStatus != 3 || child.finalAnswer == "" || agyPendingNativeSubagents(child, depth+1) {
 			return true
 		}
