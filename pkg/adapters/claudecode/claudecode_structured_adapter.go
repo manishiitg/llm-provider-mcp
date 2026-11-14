@@ -476,6 +476,13 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 		request := map[string]any{"type": "prompt", "text": prompt, "keep_warm": keepAllowed,
 			"next_prompt_capable": scope.Complete != nil, "next_prompt": scope.Eligible && scope.Current(), "next_prompt_turn": scope.TurnID}
+		var effort any
+		if opts != nil && opts.Metadata != nil {
+			if level, ok := opts.Metadata.Custom[MetadataKeyEffort].(string); ok && level != "" {
+				effort = level
+			}
+		}
+		request["runtime_settings"] = map[string]any{"model": c.modelID, "permission_mode": permissionMode, "effort": effort}
 		if adoptWake {
 			request = map[string]any{"type": "adopt", "keep_warm": keepAllowed}
 		}

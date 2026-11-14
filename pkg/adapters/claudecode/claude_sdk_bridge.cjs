@@ -91,6 +91,25 @@ function createHelperTracker(publish, includeShell = false) {
   return { observe, running: () => [...helpers.values()].some(helper => helper.state === 'started' && helper.kind !== 'background_command') };
 }
 
+// Await each native acknowledgement before the next user input can be yielded.
+// Patch only our effort key; prompt-suggestion eligibility belongs to its own control.
+async function applySDKTurnSettings(run, current, wanted) {
+  if (!wanted) return;
+  for (const [key, method] of [['model', 'setModel'], ['permission_mode', 'setPermissionMode']]) {
+    if (wanted[key] !== current[key]) {
+      if (typeof run?.[method] !== 'function') throw new Error('unsupported_turn_setting');
+      await run[method](wanted[key] || (key === 'model' ? undefined : 'default'));
+      current[key] = wanted[key];
+    }
+  }
+  const effort = wanted.effort || null;
+  if (effort !== current.effort) {
+    if (typeof run?.applyFlagSettings !== 'function') throw new Error('unsupported_turn_setting');
+    await run.applyFlagSettings({ effortLevel: effort });
+    current.effort = effort;
+  }
+}
+
 async function main() {
   const [sdkEntry, executable, ...argv] = process.argv.slice(2);
   const { query } = await import(pathToFileURL(sdkEntry).href);
@@ -148,6 +167,7 @@ async function main() {
     }
   }
   let run, wake, ended = false, keepWarm = false;
+  const turnSettings = { model: options.model || '', permission_mode: options.permissionMode || 'default', effort: options.effort || null };
   let nextPromptCapable = false, nextPromptTurn = '', settledPromptTurn = '';
   let suggestionNearLimit = false;
   const suggestionWindows = new Map();
@@ -200,7 +220,7 @@ async function main() {
           const uuid = randomUUID();
           strayCheck = parked && parkedTurnRunning;
           parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
-          input.push({ content: sdkUserContent(request), uuid, nextPrompt: request.next_prompt === true, nextPromptTurn }); wake?.(); resolve();
+          input.push({ content: sdkUserContent(request), uuid, nextPrompt: request.next_prompt === true, nextPromptTurn, settings: request.runtime_settings }); wake?.(); resolve();
         }
         else if (request.type === 'adopt') {
           keepWarm = request.keep_warm === true;
@@ -261,6 +281,13 @@ async function main() {
       const next = input.shift();
       // query() returns its control handle before this microtask resumes.
       await Promise.resolve();
+      try { await applySDKTurnSettings(run, turnSettings, next.settings); }
+      catch {
+        nativeErrorReported = true;
+        emit({type:'result', is_error:true, result:'Claude could not apply the requested turn settings. No new input was sent.'});
+        finishInput();
+        return;
+      }
       if (nextPromptCapable && next.nextPrompt !== undefined) {
         if (typeof run?.applyFlagSettings === 'function') {
           try { await run.applyFlagSettings({ promptSuggestionEnabled: next.nextPrompt && !suggestionNearLimit }); }
@@ -377,7 +404,7 @@ async function main() {
     }
   } finally { finishInput(); cancelPermissions(); lines.close(); run.close(); }
 }
-module.exports = { createHelperTracker };
+module.exports = { createHelperTracker, applySDKTurnSettings };
 if (require.main === module) main().then(() => process.stdout.write("", () => process.exit(0)), error => {
   // SDK errors can contain command-line/environment details: report only a
   // stable category here. Native semantic errors still arrive as result events.
