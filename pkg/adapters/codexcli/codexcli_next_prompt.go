@@ -18,6 +18,7 @@ func sampleCodexNextPrompt(ctx context.Context, s *codexAppSession, rpc *codexRP
 		return
 	}
 	s.mu.Lock()
+	epoch := s.promptEpoch
 	nearLimit := llmtypes.NextPromptNearLimit(codexStructuredRateLimitWindows(s.rateLimits))
 	s.mu.Unlock()
 	if !scope.Eligible || nearLimit {
@@ -48,7 +49,7 @@ func sampleCodexNextPrompt(ctx context.Context, s *codexAppSession, rpc *codexRP
 			result.Text = *reply.Text
 		}
 		s.mu.Lock()
-		stale := s.threadID != thread || s.turnID != turn
+		stale := s.threadID != thread || s.promptEpoch != epoch || s.rpc != rpc || (s.turnID != "" && s.turnID != turn)
 		s.mu.Unlock()
 		if stale {
 			result.Text = ""

@@ -22,6 +22,7 @@ import (
 )
 
 type codexAppSession struct {
+	promptEpoch                  uint64
 	owner                        string
 	goal                         *llmtypes.NativeGoal
 	goalActivationPending        bool
@@ -548,6 +549,9 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	}
 
 	s.mu.Lock()
+	if s.turnID != turn {
+		s.promptEpoch++
+	}
 	s.turnID = turn
 	s.steers = nil
 	s.mu.Unlock()
@@ -631,6 +635,9 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 			return nil, fmt.Errorf("codex retry returned no turn id")
 		}
 		s.mu.Lock()
+		if s.turnID != turn {
+			s.promptEpoch++
+		}
 		s.turnID = turn
 		s.mu.Unlock()
 		if c.logger != nil {

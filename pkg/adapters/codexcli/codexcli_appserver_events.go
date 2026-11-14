@@ -244,6 +244,9 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					turn, followupC, finishedResponse, final = next, nil, nil, ""
 					waitingForGoal = false
 					s.mu.Lock()
+					if s.turnID != next {
+						s.promptEpoch++
+					}
 					s.turnID = next
 					s.mu.Unlock()
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: map[string]any{"codex_thread_id": thread, "codex_turn_id": next}})
@@ -552,6 +555,9 @@ func (c *CodexCLIAdapter) compactAppThread(ctx context.Context, s *codexAppSessi
 		}
 	}
 	s.mu.Lock()
+	if s.turnID != turn {
+		s.promptEpoch++
+	}
 	s.turnID = turn
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.turnID = ""; s.mu.Unlock() }()

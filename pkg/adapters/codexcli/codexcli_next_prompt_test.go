@@ -12,13 +12,18 @@ import (
 // PLAT-746-992: the native sampler must never start a user/tool turn. A stale
 // native turn, old program, first turn or near-limit account gets no prediction.
 func TestCodexNextPromptUsesOnlyFencedNativeSampling(t *testing.T) {
-	for _, scenario := range []string{"prediction", "first", "near_limit", "old_program", "newer_turn"} {
+	for _, scenario := range []string{"prediction", "prediction_idle", "first", "near_limit", "old_program", "newer_turn"} {
 		t.Run(scenario, func(t *testing.T) {
 			s := &codexAppSession{owner: "chat", threadID: "thread", turnID: "turn"}
 			if scenario == "near_limit" {
 				s.rateLimits = &codexRateLimits{Primary: &codexRateLimitWindow{UsedPercent: 90}}
 			}
 			rpc, wire := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+				if scenario == "prediction_idle" {
+					s.mu.Lock()
+					s.turnID = ""
+					s.mu.Unlock()
+				}
 				if scenario == "newer_turn" {
 					s.mu.Lock()
 					s.turnID = "next-turn"
@@ -29,6 +34,7 @@ func TestCodexNextPromptUsesOnlyFencedNativeSampling(t *testing.T) {
 				}
 				return codexRPCMessage{Result: json.RawMessage(`{"text":"Check the diff"}`)}
 			})
+			s.rpc = rpc
 			done := make(chan llmtypes.NextPromptResult, 1)
 			ctx := llmtypes.WithNextPrompt(context.Background(), llmtypes.NextPromptScope{Owner: "chat", Provider: "codex-cli", TurnID: "host-turn", Eligible: scenario != "first", Complete: func(r llmtypes.NextPromptResult) { done <- r }})
 			sampleCodexNextPrompt(ctx, s, rpc, "thread", "turn")
@@ -38,10 +44,10 @@ func TestCodexNextPromptUsesOnlyFencedNativeSampling(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("prediction did not settle")
 			}
-			if scenario == "prediction" && result.Text != "Check the diff" {
+			if (scenario == "prediction" || scenario == "prediction_idle") && result.Text != "Check the diff" {
 				t.Fatalf("prediction=%+v", result)
 			}
-			if scenario != "prediction" && result.Text != "" {
+			if scenario != "prediction" && scenario != "prediction_idle" && result.Text != "" {
 				t.Fatalf("unsafe prediction=%+v", result)
 			}
 			if scenario == "first" || scenario == "near_limit" {
