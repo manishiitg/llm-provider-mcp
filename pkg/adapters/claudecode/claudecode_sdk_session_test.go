@@ -125,7 +125,20 @@ func TestClaudeSDKKeptSessionLifecycle(t *testing.T) {
 	for !ClaudeSDKWakePending("chat-wake") && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	time.Sleep(2 * claudeSDKWakeGrace) // past the grace: a waiting wake keeps the session
+	nativeID, wakeID := ClaudeSDKWakeIdentity("chat-wake")
+	if nativeID != "native-1" || wakeID == 0 {
+		t.Fatal("wake lacks exact identity")
+	}
+	if QueueClaudeSDKWake("chat-wake", nativeID, wakeID+1) {
+		t.Fatal("a stale wake claimed another hold")
+	}
+	if !QueueClaudeSDKWake("chat-wake", nativeID, wakeID) {
+		t.Fatal("host could not queue the exact wake")
+	}
+	time.Sleep(claudeSDKWakeHoldLimit + 50*time.Millisecond) // queued behind a longer foreground or schedule turn
+	if !ClaudeSDKWakePending("chat-wake") {
+		t.Fatal("queued wake expired before the lane became free")
+	}
 	adopted, first := takeClaudeSDKWake("chat-wake")
 	if adopted != wake || !strings.Contains(first, "It finished") {
 		t.Fatalf("Claude's own turn was not held for adoption: session=%v first=%q", adopted != nil, first)
