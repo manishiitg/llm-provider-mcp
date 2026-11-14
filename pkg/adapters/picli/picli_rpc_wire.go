@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -33,6 +34,7 @@ func (e *piRPCCommandError) Error() string { return fmt.Sprintf("Pi RPC %s: %s",
 
 type piRPC struct {
 	cmd          *exec.Cmd
+	nativeID     string
 	stdin        io.WriteCloser
 	writeMu      sync.Mutex
 	mu           sync.Mutex
@@ -147,6 +149,7 @@ func (r *piRPC) read(stdout io.Reader) {
 		raw, err := readPiImageSafeFrame(reader)
 		if err != nil {
 			if err != io.EOF {
+				log.Printf("[PI_RPC] session=%s action=failed reason=invalid_or_oversized_frame", r.nativeID)
 				r.finish(fmt.Errorf("read Pi RPC: %w", err))
 			} else {
 				r.finish(io.EOF)
@@ -155,6 +158,7 @@ func (r *piRPC) read(stdout io.Reader) {
 		}
 		var msg piRPCRecord
 		if err := json.Unmarshal(raw, &msg); err != nil {
+			log.Printf("[PI_RPC] session=%s action=failed reason=invalid_json_frame", r.nativeID)
 			r.finish(fmt.Errorf("invalid Pi RPC JSON: %w", err))
 			return
 		}

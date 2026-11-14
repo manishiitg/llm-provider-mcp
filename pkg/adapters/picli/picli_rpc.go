@@ -177,7 +177,7 @@ func (p *PiCLIAdapter) launchRPC(ctx context.Context, opts *llmtypes.CallOptions
 		cleanup()
 		return nil, "", err
 	}
-	r := &piRPC{cmd: cmd, stdin: stdin, pending: map[string]chan piRPCRecord{}, events: make(chan piRPCRecord, 4096), done: make(chan struct{}), exited: make(chan struct{}), stop: stop}
+	r := &piRPC{cmd: cmd, nativeID: nativeID, stdin: stdin, pending: map[string]chan piRPCRecord{}, events: make(chan piRPCRecord, 4096), done: make(chan struct{}), exited: make(chan struct{}), stop: stop}
 	go r.read(stdout)
 	go func() {
 		err := cmd.Wait()
