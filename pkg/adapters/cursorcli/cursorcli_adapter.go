@@ -88,21 +88,6 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, err
 	}
 
-	// Defensive backstop for direct adapter callers that bypass the
-	// orchestrator's image-content pre-processing. In practice, callers
-	// running through mcp-agent-builder-go funnel CLI image input as a
-	// TEXT message containing the absolute workspace path (see
-	// workspace_advanced_tools.go:1509-1517 `pathBasedImageAnalysisProvider`
-	// branch); the model uses its filesystem-read capability to view the
-	// file. So image input across all CLI providers IS uniform — text +
-	// path — and this rejection rarely fires.
-	if containsCursorImageContent(messages) {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-		return nil, fmt.Errorf("cursor-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
-	}
-
 	tmux := c.tmuxTransport
 	switch opts.CodingProviderTransport {
 	case "":
@@ -114,6 +99,12 @@ func (c *CursorCLIAdapter) GenerateContent(ctx context.Context, messages []llmty
 		return nil, fmt.Errorf("unsupported Cursor native transport %q", opts.CodingProviderTransport)
 	}
 	if tmux {
+		if containsCursorImageContent(messages) {
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, fmt.Errorf("Cursor terminal transport accepts image paths only")
+		}
 		return c.generateContentTmux(ctx, messages, opts)
 	}
 	return c.generateContentSDK(ctx, messages, opts)

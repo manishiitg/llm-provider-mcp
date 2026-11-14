@@ -722,7 +722,8 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 		_, conversation = splitCursorSystemPrompt(opts.CodingProviderHistory)
 	}
 	prompt := buildCursorStructuredPrompt("", conversation, resumePrompt)
-	if strings.TrimSpace(prompt) == "" {
+	ctx = cursorSDKImageContext(ctx, owner, conversation)
+	if strings.TrimSpace(prompt) == "" && len(llmtypes.NativeImageInputsForSession(ctx, owner)) == 0 {
 		return nil, fmt.Errorf("Cursor prompt is empty")
 	}
 	response, err = c.consumeSDKTurn(ctx, s, p, prompt, emit, owner)
