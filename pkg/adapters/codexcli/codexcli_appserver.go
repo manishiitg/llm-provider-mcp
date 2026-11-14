@@ -110,7 +110,6 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 	args := []string{}
 	args = appendCodexDisableUpdateArgs(args)
 	args = appendCodexAccountArgs(args, opts)
-	features["concurrent_reasoning_summaries"] = true
 	if codexOptionBool(opts, MetadataKeyDisableShellTool) {
 		for _, feature := range codexBridgeOnlyDisabledFeatures {
 			args = append(args, "--disable", feature)
@@ -591,6 +590,7 @@ func codexAppThreadConfig(opts *llmtypes.CallOptions, approval string) (map[stri
 	if features == nil {
 		features = map[string]any{}
 	}
+	features["concurrent_reasoning_summaries"] = true
 	if codexOptionBool(opts, MetadataKeyDisableShellTool) {
 		for _, name := range codexBridgeOnlyDisabledFeatures {
 			features[name] = false
