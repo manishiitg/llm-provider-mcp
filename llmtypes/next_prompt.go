@@ -16,6 +16,7 @@ type NextPromptScope struct {
 	Complete                func(NextPromptResult)
 }
 type NextPromptResult struct {
+	HostTurn                 string
 	Text, Reason             string
 	NativeThread, NativeTurn string
 }
