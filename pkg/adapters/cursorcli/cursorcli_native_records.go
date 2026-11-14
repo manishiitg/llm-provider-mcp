@@ -85,6 +85,26 @@ func ReadNativeRecordRows(ctx context.Context, path, sessionID, after string) ([
 						out.Text = ""
 						out.Kind, out.State, out.ToolID, out.Name = "tool", "started", block.ToolCallID, block.ToolName
 						records = append(records, out)
+						if cursorSubagentTool(block.ToolName) {
+							records = append(records, cursorSubagentRecord(out, "started"))
+						}
+					}
+				}
+			}
+		case "tool":
+			// A finished task call closes its subagent row (the same row Claude's helpers use).
+			var blocks []struct {
+				Type       string `json:"type"`
+				ToolCallID string `json:"toolCallId"`
+				ToolName   string `json:"toolName"`
+			}
+			if json.Unmarshal(msg.Content, &blocks) == nil {
+				for _, block := range blocks {
+					if block.Type == "tool-result" && block.ToolCallID != "" && cursorSubagentTool(block.ToolName) {
+						out := r
+						out.ID += ":" + block.ToolCallID
+						out.ToolID, out.Name = block.ToolCallID, block.ToolName
+						records = append(records, cursorSubagentRecord(out, "finished"))
 					}
 				}
 			}
@@ -103,4 +123,14 @@ func NativeRecordPathFromConfigDir(configDir, workingDir, sessionID string) stri
 		return ""
 	}
 	return cursorStoreDBForNativeSession("", workingDir, sessionID, configDir)
+}
+
+// cursorSubagentTool is Cursor's native subagent tool; its tool-call id is the subagent's identity.
+func cursorSubagentTool(name string) bool { return strings.EqualFold(strings.TrimSpace(name), "task") }
+
+func cursorSubagentRecord(tool llmtypes.NativeRecord, state string) llmtypes.NativeRecord {
+	tool.ID += ":helper"
+	tool.Kind, tool.State, tool.TaskID, tool.Text = "helper", state, tool.ToolID, ""
+	tool.Name, tool.HelperType = "Subagent", "task"
+	return tool
 }

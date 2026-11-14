@@ -26,3 +26,25 @@ func TestCursorNativeRecordBoundary(t *testing.T) {
 		t.Fatal("changed native root was silently accepted")
 	}
 }
+
+// A Cursor task call is a subagent row that closes when its result arrives.
+func TestCursorNativeSubagentRowOpensAndCloses(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := writeCursorStoreFixture(t, "/project", "native", []string{
+		`{"role":"assistant","content":[{"type":"tool-call","toolCallId":"call-1","toolName":"task"},{"type":"tool-call","toolCallId":"call-2","toolName":"read"}]}`,
+		`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"task","result":"done"},{"type":"tool-result","toolCallId":"call-2","toolName":"read","result":"x"}]}`,
+	})
+	rows, _, err := ReadNativeRecordRows(context.Background(), path, "native", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var helpers []string
+	for _, r := range rows {
+		if r.Kind == "helper" {
+			helpers = append(helpers, r.TaskID+":"+r.State)
+		}
+	}
+	if len(helpers) != 2 || helpers[0] != "call-1:started" || helpers[1] != "call-1:finished" {
+		t.Fatalf("want only the task call's row to open and close, got %v", helpers)
+	}
+}

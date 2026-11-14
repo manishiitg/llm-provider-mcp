@@ -102,3 +102,56 @@ func TestAgyPendingStepDoesNotReplayOrStarveLaterRecords(t *testing.T) {
 		t.Fatalf("unknown tool's later completion was lost: %+v %v", finished, err)
 	}
 }
+
+// An invoke_subagent step opens a subagent row per child conversation; it closes only when that child's own
+// conversation ends in a finished answer.
+func TestAgySubagentRowOpensAndClosesWithItsChild(t *testing.T) {
+	dir := t.TempDir()
+	open := func(name string) *sql.DB {
+		db, err := sql.Open("sqlite", filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB, status INTEGER)`); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
+	}
+	parent, child := open("parent.db"), open("child1.db")
+	payload := protowire.AppendBytes(protowire.AppendTag(nil, 10, protowire.BytesType), protowire.AppendString(protowire.AppendTag(nil, 1, protowire.BytesType), "child1"))
+	for _, field := range []protowire.Number{143, 2, 6, 2, 140} {
+		payload = protowire.AppendBytes(protowire.AppendTag(nil, field, protowire.BytesType), payload)
+	}
+	if _, err := parent.Exec(`INSERT INTO steps VALUES(1,132,?,3)`, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Exec(`INSERT INTO steps VALUES(1,15,x'',1)`); err != nil {
+		t.Fatal(err)
+	}
+	states := func(b Batch) (out []string) {
+		for _, r := range b.Records {
+			if r.Kind == "helper" {
+				out = append(out, r.TaskID+":"+r.State)
+			}
+		}
+		return out
+	}
+	b, err := Read(context.Background(), "agy-cli", "native", filepath.Join(dir, "parent.db"), Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := states(b); len(got) != 1 || got[0] != "child1:started" {
+		t.Fatalf("launch opens one row and the unfinished child keeps it open, got %v", got)
+	}
+	if _, err := child.Exec(`UPDATE steps SET status=3 WHERE idx=1`); err != nil {
+		t.Fatal(err)
+	}
+	b, err = Read(context.Background(), "agy-cli", "native", filepath.Join(dir, "parent.db"), b.Next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := states(b); len(got) != 1 || got[0] != "child1:finished" {
+		t.Fatalf("the finished child closes its row once, got %v", got)
+	}
+}
