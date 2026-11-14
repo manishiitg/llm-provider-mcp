@@ -85,6 +85,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	// runs as the next turn on the same thread. Keep this call (and so the
 	// session's turn id, Stop and queue) on that turn until it ends.
 	var followupC <-chan time.Time
+	waitingForGoal := false
 	var finishedResponse *llmtypes.ContentResponse
 	// Replies of the turns already finished in this call; the returned text keeps them all.
 	var carried string
@@ -100,6 +101,16 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	for {
 		select {
 		case <-followupC:
+			if waitingForGoal {
+				pauseCtx, pauseCancel := context.WithTimeout(ctx, 10*time.Second)
+				_, pauseErr := setCodexGoalStatus(pauseCtx, s, r, thread, "paused", emit, "native_continuation_not_started")
+				pauseCancel()
+				if pauseErr != nil {
+					return nil, pauseErr
+				}
+				completed = true
+				return codexAppResponse(s, joined(), usage), nil
+			}
 			completed = true
 			if c.logger != nil {
 				c.logger.Infof("codex app-server steered input: no follow-up turn within %s thread=%s turn=%s", codexSteerFollowupWait, thread, turn)
@@ -109,6 +120,9 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 			// Do not let cancellation leave an unobserved turn executing. The persisted
 			// native thread can be resumed even when the process needs termination.
 			cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if codexGoalActive(s) {
+				_, _ = setCodexGoalStatus(cancelCtx, s, r, thread, "paused", emit, "turn_canceled")
+			}
 			_ = r.call(cancelCtx, "turn/interrupt", map[string]any{"threadId": thread, "turnId": turn}, nil)
 			cancel()
 			r.close()
@@ -143,6 +157,17 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				continue
 			}
 
+			if handled, goalErr := handleCodexGoalNotification(s, msg.Method, msg.Params, thread, emit); handled {
+				if goalErr != nil {
+					return nil, goalErr
+				}
+				if waitingForGoal && !codexGoalActive(s) {
+					completed = true
+					return codexAppResponse(s, joined(), usage), nil
+				}
+				continue
+			}
+
 			if msg.Method == "account/rateLimits/updated" {
 				var payload struct {
 					RateLimits json.RawMessage `json:"rateLimits"`
@@ -173,6 +198,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					carried = joined()
 					compact = nil
 					turn, followupC, finishedResponse, final = next, nil, nil, ""
+					waitingForGoal = false
 					s.mu.Lock()
 					s.turnID = next
 					s.mu.Unlock()
@@ -314,6 +340,14 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					emit(llmtypes.StreamChunk{Type: kind, Content: codexToolItemLabel(tool), ToolName: codexToolItemName(tool), ToolCallID: tool.ID, ToolArgs: codexToolItemArgs(tool), ToolResult: codexToolItemResult(tool), ToolDuration: duration, Metadata: metadata})
 				}
 			case "turn/completed":
+				if event.Turn.Status == "completed" && codexGoalActive(s) {
+					finishedResponse = codexAppResponse(s, joined(), usage)
+					followup := time.NewTimer(codexGoalFollowupWait)
+					defer followup.Stop()
+					followupC = followup.C
+					waitingForGoal = true
+					continue
+				}
 				if event.Turn.Status == "completed" {
 					s.mu.Lock()
 					steered := len(s.steers) > 0

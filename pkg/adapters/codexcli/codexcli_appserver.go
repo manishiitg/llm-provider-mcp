@@ -20,6 +20,9 @@ import (
 )
 
 type codexAppSession struct {
+	owner                        string
+	goal                         *llmtypes.NativeGoal
+	goalActivationPending        bool
 	turnMu                       sync.Mutex
 	mu                           sync.Mutex
 	rpc                          *codexRPC
@@ -239,7 +242,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	codexAppSessions.Lock()
 	s := codexAppSessions.sessions[owner]
 	if s == nil {
-		s = &codexAppSession{}
+		s = &codexAppSession{owner: owner}
 		codexAppSessions.sessions[owner] = s
 	}
 	codexAppSessions.Unlock()
@@ -427,6 +430,15 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	if idleCompact {
 		return c.compactAppThread(ctx, s, r, thread, emit)
 	}
+	goalCommand, hasGoalCommand := llmtypes.NativeGoalCommandFromContext(ctx)
+	activateGoal := false
+	if hasGoalCommand {
+		var reply *llmtypes.ContentResponse
+		prompt, activateGoal, reply, err = c.prepareCodexGoalCommand(ctx, s, r, thread, goalCommand, emit)
+		if err != nil || reply != nil {
+			return reply, err
+		}
+	}
 	params := codexAppTurnParams(thread, prompt, opts)
 	var started struct {
 		Turn codexAppTurn `json:"turn"`
@@ -441,6 +453,12 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		return nil, fmt.Errorf("codex app-server returned no turn id")
 	}
 
+	if activateGoal {
+		if _, goalErr := setCodexGoalStatus(ctx, s, r, thread, "active", emit, "goal_started"); goalErr != nil {
+			_ = r.call(ctx, "turn/interrupt", map[string]any{"threadId": thread, "turnId": turn}, nil)
+			return nil, goalErr
+		}
+	}
 	s.mu.Lock()
 	s.turnID = turn
 	s.steers = nil
@@ -494,6 +512,9 @@ func codexAppResponse(s *codexAppSession, content string, usage codexAppUsage) *
 		for key, value := range s.status.Metadata {
 			info.Additional[key] = value
 		}
+	}
+	if s.goal != nil {
+		info.Additional["native_goal"] = s.goal
 	}
 	if windows := codexStructuredRateLimitWindows(s.rateLimits); len(windows) > 0 {
 		info.Additional[llmtypes.RateLimitWindowsMetaKey] = windows

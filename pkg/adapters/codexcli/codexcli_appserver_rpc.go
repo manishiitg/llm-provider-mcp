@@ -24,6 +24,16 @@ type codexRPCMessage struct {
 	Error  *codexRPCError  `json:"error,omitempty"`
 }
 
+type codexRPCRequestError struct {
+	Method  string
+	Code    int
+	Message string
+}
+
+func (e *codexRPCRequestError) Error() string {
+	return fmt.Sprintf("codex app-server %s (%d): %s", e.Method, e.Code, e.Message)
+}
+
 type codexRPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -72,7 +82,7 @@ func (r *codexRPC) call(ctx context.Context, method string, params any, result a
 			if method == "turn/steer" {
 				return fmt.Errorf("%w: Codex rejected steer (%d)", llmtypes.ErrCodingAgentInputNotSent, response.Error.Code)
 			}
-			return fmt.Errorf("codex app-server %s (%d): %s", method, response.Error.Code, response.Error.Message)
+			return &codexRPCRequestError{Method: method, Code: response.Error.Code, Message: response.Error.Message}
 		}
 		if result != nil {
 			return json.Unmarshal(response.Result, result)
