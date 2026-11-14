@@ -168,11 +168,13 @@ func (s *claudeSDKSession) interruptHelpers() {
 // work finished); the host shows it by starting a turn that adopts it
 // (llmtypes.WithCodingProviderAdoptWake) or closes the session.
 type SDKBackgroundUpdate struct {
-	Owner     string
-	Tasks     []SDKBackgroundTask
-	Closed    string
-	IdleLimit time.Duration
-	Wake      bool
+	NativeSessionID string
+	WakeID          uint64
+	Owner           string
+	Tasks           []SDKBackgroundTask
+	Closed          string
+	IdleLimit       time.Duration
+	Wake            bool
 }
 
 var claudeSDKBackgroundListener atomic.Pointer[func(SDKBackgroundUpdate)]
@@ -367,6 +369,7 @@ type claudeSDKSession struct {
 	wakeGrace *time.Timer
 	wakeHold  *time.Timer
 	wakeFirst string
+	wakeID    uint64
 	// wakeDismissed: the chat does not show Claude's current own turn; its
 	// output is read and dropped until its result.
 	wakeDismissed bool
@@ -381,6 +384,7 @@ var claudeSDKWakeGrace = 30 * time.Second
 // lost adopt, a crash or a stuck chat must never leave the session paused with
 // nobody reading it.
 var claudeSDKWakeHoldLimit = 60 * time.Second
+var claudeSDKWakeNextID atomic.Uint64
 
 // startClaudeSDKSession starts the bridge. cleanup runs once the process has exited.
 func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader, stderr *claudeLockedBuffer, kill context.CancelFunc, cleanup func(), logger interfaces.Logger) (*claudeSDKSession, error) {
@@ -563,6 +567,8 @@ func (s *claudeSDKSession) holdWake(line string) bool {
 		return false
 	}
 	s.wakeFirst = line
+	s.wakeID = claudeSDKWakeNextID.Add(1)
+	nativeID, wakeID := s.nativeID, s.wakeID
 	if s.wakeGrace != nil {
 		s.wakeGrace.Stop()
 		s.wakeGrace = nil
@@ -570,7 +576,7 @@ func (s *claudeSDKSession) holdWake(line string) bool {
 	s.wakeHold = time.AfterFunc(claudeSDKWakeHoldLimit, func() { s.dismissWake("wake_not_adopted") })
 	s.mu.Unlock()
 	s.logf("[SDK_BACKGROUND] wake session=%s: Claude started a turn on its own", s.owner)
-	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Wake: true})
+	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, NativeSessionID: nativeID, WakeID: wakeID, Wake: true})
 	return true
 }
 
@@ -860,4 +866,39 @@ func StopClaudeSDKBackgroundTask(owner, taskID string) bool {
 	}
 	s.logf("[SDK_BACKGROUND] stop requested session=%s task=%s", s.owner, taskID)
 	return s.input.write(map[string]any{"type": "stop_task", "task_id": taskID}) == nil
+}
+
+// QueueClaudeSDKWake confirms that the host accepted this exact wake into its
+// existing turn lane. A queued turn is not abandoned just because another turn
+// lasts longer than the unclaimed-wake timeout. Stop/process close still apply.
+func QueueClaudeSDKWake(owner, native string, wakeID uint64) bool {
+	claudeSDKKept.Lock()
+	s := claudeSDKKept.sessions[strings.TrimSpace(owner)]
+	claudeSDKKept.Unlock()
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.parked || s.closing || s.nativeID != native || s.wakeFirst == "" || s.wakeID != wakeID {
+		return false
+	}
+	s.stopWakeHoldLocked()
+	return true
+}
+
+// ClaudeSDKWakeIdentity is only a correlation fence, not a permission grant.
+func ClaudeSDKWakeIdentity(owner string) (string, uint64) {
+	claudeSDKKept.Lock()
+	s := claudeSDKKept.sessions[strings.TrimSpace(owner)]
+	claudeSDKKept.Unlock()
+	if s == nil {
+		return "", 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.parked || s.closing || s.wakeFirst == "" {
+		return "", 0
+	}
+	return s.nativeID, s.wakeID
 }
