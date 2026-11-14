@@ -3,6 +3,7 @@ package claudecode
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,9 +31,18 @@ func claudeCurrentResumeInstructions(opts *llmtypes.CallOptions, cwd, id, system
 		}
 	}
 	if resumed && changed {
+		log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=started reason=current_instructions_needed", claudeInteractiveSessionIDFromOptions(opts), id)
 		prompt = "[Current AgentWorks Instructions]\n" + system + "\n\n[Current User Message]\n" + prompt
 	}
 	return prompt, func() {
+		saved := false
+		defer func() {
+			if !saved {
+				log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=failed reason=delivery_marker_write_failed", claudeInteractiveSessionIDFromOptions(opts), id)
+			} else if resumed && changed {
+				log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=done reason=current_instructions_delivered", claudeInteractiveSessionIDFromOptions(opts), id)
+			}
+		}()
 		marker, e := claudeInstructionMarker(root, relative, true)
 		if e == nil {
 			f, e := os.CreateTemp(filepath.Dir(marker), ".instructions-")
@@ -46,7 +56,7 @@ func claudeCurrentResumeInstructions(opts *llmtypes.CallOptions, cwd, id, system
 				return
 			}
 			if e = slotfs.ShareTree(root, f.Name()); e == nil {
-				_ = os.Rename(f.Name(), marker)
+				saved = os.Rename(f.Name(), marker) == nil
 			}
 		}
 	}
@@ -86,4 +96,26 @@ func claudeInstructionMarker(root, relative string, create bool) (string, error)
 		return "", fmt.Errorf("instruction state contains a link")
 	}
 	return marker, nil
+}
+
+// A successful native compaction can discard the inline current-instructions
+// refresh. Forget its delivery receipt so the next ordinary turn sends it again.
+// Keep the same link refusal as receipt writes; never follow an agent's marker.
+func forgetClaudeResumeInstructions(opts *llmtypes.CallOptions, cwd, id string) {
+	root := llmtypes.CLIArtifactDirectory(opts, cwd)
+	relative := fmt.Sprintf(".claude/.mlp-current-instructions-%x.sha256", sha256.Sum256([]byte(id)))
+	marker, err := claudeInstructionMarker(root, relative, false)
+	if os.IsNotExist(err) {
+		log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=done reason=compacted_marker_absent", claudeInteractiveSessionIDFromOptions(opts), id)
+		return
+	}
+	if err != nil {
+		log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=failed reason=compaction_marker_path_refused", claudeInteractiveSessionIDFromOptions(opts), id)
+		return
+	}
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=failed reason=compaction_marker_remove_failed", claudeInteractiveSessionIDFromOptions(opts), id)
+		return
+	}
+	log.Printf("[CLI_INSTRUCTIONS] provider=claude-code session=%s native=%s action=done reason=compacted_instructions_need_refresh", claudeInteractiveSessionIDFromOptions(opts), id)
 }
