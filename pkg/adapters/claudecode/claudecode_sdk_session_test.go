@@ -29,8 +29,8 @@ func TestClaudeSDKReuseDecision(t *testing.T) {
 		reuse          bool
 		reason         string
 	}{
-		{"same launch and conversation", launch("m1", "sys", "{}"), "s1", "s1", true, ""},
-		{"model and MCP servers changed", launch("m2", "sys", "{\"x\":1}"), "s1", "s1", false, "launch_changed:model,option:" + MetadataKeyMCPConfig},
+		{"changed model and current instructions", launch("m2", "new rules", "{}"), "s1", "s1", true, ""},
+		{"model and MCP servers changed", launch("m2", "sys", "{\"x\":1}"), "s1", "s1", false, "launch_changed:option:" + MetadataKeyMCPConfig},
 		{"new conversation", launch("m1", "sys", "{}"), "s1", "", false, "new_conversation"},
 		{"other conversation", launch("m1", "sys", "{}"), "s1", "s2", false, "other_conversation"},
 	} {
@@ -323,4 +323,35 @@ func TestClaudeSDKWarmSessionBoundAndCleanup(t *testing.T) {
 		t.Fatal("Stop missed a task-free warm query")
 	}
 	waitExit(stopped)
+}
+
+// A changed model/effort/mode or instruction refresh must not kill native
+// background work; actual auth/tool/environment/program changes still must.
+func TestClaudeSDKLaunchIdentityUsesEffectiveEnvironmentAndConfig(t *testing.T) {
+	opts := &llmtypes.CallOptions{Metadata: &llmtypes.Metadata{Custom: map[string]interface{}{MetadataKeyMCPConfig: `{"b":2,"a":1}`}}}
+	base := claudeSDKLaunchParts("first", "rules", "", "default", []string{"A=old", "A=current", "B=ok"}, opts, false, "binary", "sdk", "cwd")
+	opts.Metadata.Custom[MetadataKeyMCPConfig] = ` { "a":1, "b":2 } `
+	opts.Metadata.Custom[MetadataKeyEffort] = "low"
+	opts.Metadata.Custom[MetadataKeyPermissionMode] = "plan"
+	wanted := claudeSDKLaunchParts("second", "new rules", "", "plan", []string{"B=ok", "A=current"}, opts, false, "binary", "sdk", "cwd")
+	if diff := base.changed(wanted); len(diff) != 0 {
+		t.Fatalf("equivalent process identity changed: %v", diff)
+	}
+	for _, tc := range []struct {
+		name   string
+		env    []string
+		binary string
+	}{
+		{"environment", []string{"A=other", "B=ok"}, "binary"},
+		{"binary", []string{"B=ok", "A=current"}, "new-binary"},
+	} {
+		changed := claudeSDKLaunchParts("second", "new rules", "", "plan", tc.env, opts, false, tc.binary, "sdk", "cwd")
+		if diff := base.changed(changed); len(diff) != 1 || diff[0] != tc.name {
+			t.Fatalf("%s change not fenced: %v", tc.name, diff)
+		}
+	}
+	opts.Metadata.Custom["future_tool_policy"] = true
+	if diff := base.changed(claudeSDKLaunchParts("second", "rules", "", "plan", []string{"B=ok", "A=current"}, opts, false, "binary", "sdk", "cwd")); len(diff) != 1 || diff[0] != "option:future_tool_policy" {
+		t.Fatalf("unknown policy silently ignored: %v", diff)
+	}
 }

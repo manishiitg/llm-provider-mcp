@@ -94,12 +94,14 @@ function createHelperTracker(publish, includeShell = false) {
 // Await each native acknowledgement before the next user input can be yielded.
 // Patch only our effort key; prompt-suggestion eligibility belongs to its own control.
 async function applySDKTurnSettings(run, current, wanted) {
-  if (!wanted) return;
+  if (!wanted) return [];
+  const changed = [];
   for (const [key, method] of [['model', 'setModel'], ['permission_mode', 'setPermissionMode']]) {
     if (wanted[key] !== current[key]) {
       if (typeof run?.[method] !== 'function') throw new Error('unsupported_turn_setting');
       await run[method](wanted[key] || (key === 'model' ? undefined : 'default'));
       current[key] = wanted[key];
+      changed.push(key);
     }
   }
   const effort = wanted.effort || null;
@@ -107,7 +109,9 @@ async function applySDKTurnSettings(run, current, wanted) {
     if (typeof run?.applyFlagSettings !== 'function') throw new Error('unsupported_turn_setting');
     await run.applyFlagSettings({ effortLevel: effort });
     current.effort = effort;
+    changed.push("effort");
   }
+  return changed;
 }
 
 async function main() {
@@ -117,6 +121,8 @@ async function main() {
     pathToClaudeCodeExecutable: executable,
     cwd: process.cwd(), env: process.env,
     includePartialMessages: true,
+    // A host-authorized later turn may select bypass; current permissionMode still governs every call.
+    allowDangerouslySkipPermissions: true,
     thinking: { type: 'adaptive', display: 'summarized' },
     // Match the CLI's normal Claude Code instructions and project skills.
     systemPrompt: { type: 'preset', preset: 'claude_code' },
@@ -281,9 +287,13 @@ async function main() {
       const next = input.shift();
       // query() returns its control handle before this microtask resumes.
       await Promise.resolve();
-      try { await applySDKTurnSettings(run, turnSettings, next.settings); }
+      try {
+        const fields = await applySDKTurnSettings(run, turnSettings, next.settings);
+        if (fields.length) emit({type:'sdk_turn_settings', settings_fields:fields});
+      }
       catch {
         nativeErrorReported = true;
+        emit({type:'sdk_turn_settings', settings_failed:true});
         emit({type:'result', is_error:true, result:'Claude could not apply the requested turn settings. No new input was sent.'});
         finishInput();
         return;

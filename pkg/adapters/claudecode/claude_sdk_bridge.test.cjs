@@ -379,3 +379,49 @@ test('warm turn setters await acknowledgements and patch only effortLevel', asyn
   await assert.rejects(applySDKTurnSettings({ setModel: async () => { throw new Error('refused'); } }, current, { ...wanted, model: 'refused' }));
   assert.equal(current.model, 'two');
 });
+
+test('warm bridge applies changed controls before input and refuses input after a rejected setter', { timeout: 5000 }, async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'sdk-turn-controls-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  writeFileSync(join(folder, 'sdk.mjs'), `
+export function query({prompt}) {
+  const calls = [];
+  const iterator = (async function* () {
+    yield {type:'system', subtype:'init', session_id:'same-native'};
+    for await (const message of prompt) {
+      yield {type:'result', result:JSON.stringify({text:message.message.content, calls:[...calls]}), user_message_uuids:[message.uuid]};
+    }
+  })();
+  iterator.setModel = async value => { await Promise.resolve(); if(value === 'refused') throw new Error('private failure details'); calls.push(['model',value]); };
+  iterator.setPermissionMode = async value => { await Promise.resolve(); calls.push(['permission',value]); };
+  iterator.applyFlagSettings = async value => { await Promise.resolve(); calls.push(['flags',value]); };
+  iterator.close = () => {};
+  return iterator;
+}`);
+  const child = spawn(process.execPath, [join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused', '--model', 'one', '--effort', 'high', '--permission-mode', 'default'], {stdio:['pipe','pipe','pipe'], env:{...process.env, AGENTWORKS_CLI_LAUNCH:''}});
+  t.after(() => child.kill());
+  const events = []; let pending = '', stderr = '';
+  const send = (text, model, permission_mode, effort) => child.stdin.write(JSON.stringify({type:'prompt', text, keep_warm:true, runtime_settings:{model,permission_mode,effort}})+'\n');
+  child.stderr.on('data', data => stderr += data);
+  child.stdout.on('data', data => {
+    pending += data;
+    while(pending.includes('\n')) {
+      const end = pending.indexOf('\n'), line = pending.slice(0,end); pending = pending.slice(end+1);
+      const event = JSON.parse(line); events.push(event);
+      if(event.type === 'result' && !event.is_error) {
+        const result = JSON.parse(event.result);
+        if(result.text === 'first') send('second', 'two', 'plan', 'low');
+        else send('not delivered', 'refused', 'dontAsk', null);
+      }
+    }
+  });
+  const finished = new Promise((resolve,reject) => { child.once('error',reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
+  send('first','one','default','high');
+  await finished;
+  const answers = events.filter(e => e.type === 'result' && !e.is_error).map(e => JSON.parse(e.result));
+  assert.equal(answers.length,2);
+  assert.deepEqual(answers[0].calls,[]);
+  assert.deepEqual(answers[1],{text:'second', calls:[['model','two'],['permission','plan'],['flags',{effortLevel:'low'}]]});
+  assert.equal(events.filter(e => e.type === 'result' && e.is_error).length,1);
+  assert.equal(JSON.stringify(events).includes('private failure details'),false);
+});

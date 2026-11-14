@@ -25,10 +25,12 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // assistant events (message.content text/tool_use blocks), then a terminal
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
-	Suggestion       string `json:"suggestion,omitempty"`
-	SDKPromptTurn    string `json:"sdk_prompt_turn,omitempty"`
-	PromptSkipReason string `json:"prompt_skip_reason,omitempty"`
-	SDKContinues     bool   `json:"sdk_continues,omitempty"`
+	SettingsFields   []string `json:"settings_fields,omitempty"`
+	SettingsFailed   bool     `json:"settings_failed,omitempty"`
+	Suggestion       string   `json:"suggestion,omitempty"`
+	SDKPromptTurn    string   `json:"sdk_prompt_turn,omitempty"`
+	PromptSkipReason string   `json:"prompt_skip_reason,omitempty"`
+	SDKContinues     bool     `json:"sdk_continues,omitempty"`
 	// SDKParked: the result ends this turn but keeps its query, either warm or
 	// for Claude's own background work (PLAT-746-941).
 	SDKParked     bool                 `json:"sdk_parked,omitempty"`
@@ -317,6 +319,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		freshSessionID = newClaudeNativeSessionID()
 	}
 	launchPrompt := systemPrompt + llmtypes.CLIPrivateSkillInstructions(opts, ".claude/skills")
+	currentInstructions := systemPrompt
+	if c.sdkTransport {
+		currentInstructions = launchPrompt
+	}
 	if c.sdkTransport && projectedPrompt && projectInstructionOnlyFromOptions(opts) {
 		launchPrompt = ""
 	}
@@ -326,7 +332,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	// /compact must reach Claude as the whole input: wrapped in the refreshed instructions it is an ordinary message
 	// that Claude answers without compacting. The next person message still carries the changed instructions.
 	if !idleCompact {
-		prompt, rememberInstructions = claudeCurrentResumeInstructions(opts, workingDir, sessionID, systemPrompt, prompt, resumeSessionID != "")
+		prompt, rememberInstructions = claudeCurrentResumeInstructions(opts, workingDir, sessionID, currentInstructions, prompt, resumeSessionID != "")
 	}
 	defer func() {
 		if err == nil && !instructionsCompacted {
@@ -374,7 +380,26 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 	}
 	if c.sdkTransport {
-		launch := claudeSDKLaunchParts(c.modelID, systemPrompt, strings.TrimPrefix(launchPrompt, systemPrompt), permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx))
+		var setupStream chan<- llmtypes.StreamChunk
+		if opts != nil {
+			setupStream = opts.StreamChan
+		}
+		if err := llmtypes.PrepareCodingSDK(ctx, "claude-code", setupStream); err != nil {
+			return nil, err
+		}
+		sdkEntry, err := claudeSDKEntry()
+		if err != nil {
+			return nil, err
+		}
+		binaryIdentity, err := claudeSDKProgramIdentity(binPath)
+		if err != nil {
+			return nil, err
+		}
+		sdkIdentity, err := claudeSDKProgramIdentity(sdkEntry)
+		if err != nil {
+			return nil, err
+		}
+		launch := claudeSDKLaunchParts(c.modelID, currentInstructions, "", permissionMode, environment, opts, llmtypes.CodingAgentQuestionsAvailable(ctx), binaryIdentity, sdkIdentity, workingDir)
 		keepAllowed = owner != "" && claudePersistentInteractiveFromOptions(opts) && !idleCompact
 		if owner != "" && !idleCompact && sess == nil {
 			sess = takeKeptClaudeSDKSession(owner, launch, resumeSessionID)
@@ -385,13 +410,6 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				c.logger.Infof("Continuing kept Claude Agent SDK session: background tasks=%d", sess.taskCount())
 			}
 		} else {
-			var setupStream chan<- llmtypes.StreamChunk
-			if opts != nil {
-				setupStream = opts.StreamChan
-			}
-			if err := llmtypes.PrepareCodingSDK(ctx, "claude-code", setupStream); err != nil {
-				return nil, err
-			}
 			// The process outlives this turn when it is kept, so its life is not the turn's context;
 			// a cancelled turn still ends it (below).
 			life, kill := context.WithCancel(context.Background())
@@ -673,6 +691,20 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 						response := claudeSDKPermission(questionCtx, request.ToolName, request.Input, request.Suggestions)
 						_ = sdkProcess.write(map[string]any{"type": "permission", "id": request.RequestID, "response": response})
 					})
+				}
+			case "sdk_turn_settings":
+				if c.logger != nil {
+					if ev.SettingsFailed {
+						c.logger.Infof("[CLAUDE_WARM] session=%s native=%s action=failed reason=turn_settings_refused", owner, sessionID)
+					} else {
+						var fields []string
+						for _, field := range ev.SettingsFields {
+							if field == "model" || field == "permission_mode" || field == "effort" {
+								fields = append(fields, field)
+							}
+						}
+						c.logger.Infof("[CLAUDE_WARM] session=%s native=%s action=done reason=turn_settings_applied fields=%s", owner, sessionID, strings.Join(fields, ","))
+					}
 				}
 			case "sdk_control_result":
 				if sdkProcess != nil {
@@ -1148,7 +1180,7 @@ func claudeContinuedResultText(previous string, event claudeStreamEvent, continu
 func claudeUnshownEvent(ev claudeStreamEvent) string {
 	switch ev.Type {
 	case "stream_event", "assistant", "user", "result", "rate_limit_event",
-		"sdk_permission", "sdk_permission_cancel", "sdk_control_result", "sdk_background", "sdk_helper":
+		"sdk_permission", "sdk_permission_cancel", "sdk_control_result", "sdk_background", "sdk_helper", "sdk_turn_settings":
 		return ""
 	case "system":
 		switch ev.Subtype {

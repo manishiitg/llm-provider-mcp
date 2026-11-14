@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/commandlabel"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -226,7 +228,7 @@ func claudeSDKTasksFromWire(wire []claudeSDKWireTask) []SDKBackgroundTask {
 // another copy of credentials. The conversation is compared on its own.
 type claudeSDKLaunch map[string][32]byte
 
-func claudeSDKLaunchParts(model, systemPrompt, launchExtra, permissionMode string, environment []string, opts *llmtypes.CallOptions, questions bool) claudeSDKLaunch {
+func claudeSDKLaunchParts(model, systemPrompt, launchExtra, permissionMode string, environment []string, opts *llmtypes.CallOptions, questions bool, identity ...string) claudeSDKLaunch {
 	parts := claudeSDKLaunch{}
 	add := func(name string, value any) {
 		raw, err := json.Marshal(value)
@@ -236,24 +238,61 @@ func claudeSDKLaunchParts(model, systemPrompt, launchExtra, permissionMode strin
 		}
 		parts[name] = sha256.Sum256(raw)
 	}
-	add("model", model)
-	add("system_prompt", systemPrompt)
-	add("skill_instructions", launchExtra)
-	add("permission_mode", permissionMode)
-	add("environment", environment)
+	// Model/effort/permission use acknowledged native setters. Current trusted
+	// instructions (including private skills) use the existing resume carrier.
+	// Empty instructions still force a restart rather than retaining old rules.
+	add("instructions_empty", strings.TrimSpace(systemPrompt+launchExtra) == "")
+	effectiveEnv := map[string]string{}
+	for _, entry := range environment {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			effectiveEnv[key] = value
+		}
+	}
+	add("environment", effectiveEnv)
+	for i, key := range []string{"binary", "sdk", "working_dir"} {
+		if i < len(identity) {
+			add(key, identity[i])
+		}
+	}
 	add("native_questions", questions)
 	if opts != nil {
 		add("security", opts.CLISecurity)
 		add("runtime_dir", opts.CLIRuntimeDir)
 		if opts.Metadata != nil {
 			for key, value := range opts.Metadata.Custom {
-				if key != MetadataKeyResumeSessionID {
-					add("option:"+key, value)
+				switch key {
+				case MetadataKeyResumeSessionID, MetadataKeyEffort, MetadataKeyPermissionMode, MetadataKeyDangerouslySkipPermissions:
+					continue // Native conversation fence or acknowledged turn controls.
 				}
+				// Compare JSON config contents, not formatting or map key order.
+				if key == MetadataKeyMCPConfig || key == MetadataKeySettings {
+					if raw, ok := value.(string); ok {
+						var decoded any
+						if json.Unmarshal([]byte(raw), &decoded) == nil {
+							value = decoded
+						}
+					}
+				}
+				// Unknown/tool-policy options remain restart boundaries: never
+				// silently reuse an old tool grant or MCP authentication context.
+				add("option:"+key, value)
 			}
 		}
 	}
 	return parts
+}
+
+// Compare installed program identity without reading a large executable each turn.
+func claudeSDKProgramIdentity(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s:%d:%d", resolved, info.Size(), info.ModTime().UnixNano()), nil
 }
 
 // changed names the parts that differ (names only, never values).
