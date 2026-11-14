@@ -2601,6 +2601,7 @@ func parseTmuxMajorVersion(version string) (int, bool) {
 
 // CleanupClaudeCodeTmuxSessions cleans up registered Claude Code tmux sessions.
 func CleanupClaudeCodeTmuxSessions(ctx context.Context) error {
+	closeAllKeptClaudeSDKSessions()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return nil
 	}

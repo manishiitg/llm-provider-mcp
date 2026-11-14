@@ -92,16 +92,18 @@ async function main() {
   // private folder, which no confined CLI can write; the launcher deletes it.
   const launch = process.env.AGENTWORKS_CLI_LAUNCH && JSON.parse(process.env.AGENTWORKS_CLI_LAUNCH);
   delete process.env.AGENTWORKS_CLI_LAUNCH;
-  if (launch) {
-    options.spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
+  let nativeProcess;
+  options.spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
+    if (launch) {
       const policy = join(__dirname, `policy-${randomUUID()}.json`);
       writeFileSync(policy, JSON.stringify(launch.policy), { mode: 0o600, flag: 'wx' });
       try {
-        return spawn(launch.runner, ['--config', policy, '--', ...launch.env_args, command, ...args],
+        nativeProcess = spawn(launch.runner, ['--config', policy, '--', ...launch.env_args, command, ...args],
           { cwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (error) { rmSync(policy, { force: true }); throw error; }
-    };
-  }
+    } else nativeProcess = spawn(command, args, { cwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'] });
+    return nativeProcess;
+  };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '-p' || flag === '--verbose') continue;
@@ -127,7 +129,7 @@ async function main() {
       default: throw new Error(`Unsupported SDK launch flag ${flag}`);
     }
   }
-  let run, wake, ended = false;
+  let run, wake, ended = false, keepWarm = false;
   const helpers = createHelperTracker(emit, true);
   // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
   // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
@@ -171,12 +173,14 @@ async function main() {
       try {
         const request = JSON.parse(line);
         if (request.type === 'prompt') {
+          keepWarm = request.keep_warm === true;
           const uuid = randomUUID();
           strayCheck = parked && parkedTurnRunning;
           parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
           input.push({ text: request.text, uuid }); wake?.(); resolve();
         }
         else if (request.type === 'adopt') {
+          keepWarm = request.keep_warm === true;
           // The host takes the model turn Claude started on its own: from here its output is the host's turn, and
           // its result ends that turn as usual. One that already ended is reported so the host ends its turn too.
           if (parked && parkedTurnRunning) { parked = false; turnActive = true; strayCheck = false; promptConsumed = true; }
@@ -203,7 +207,7 @@ async function main() {
           // The host ended a turn held open after its answer. What still runs is no longer part of a turn; the
           // session stays only for Claude's own background tasks (keep), otherwise input ends.
           turnActive = false; strayCheck = false; promptConsumed = true;
-          if (request.keep && ownRunning().length > 0) parked = true; else finishInput();
+          if (request.keep && (keepWarm || ownRunning().length > 0)) parked = true; else finishInput();
         }
         else if (request.type === 'stop_task') {
           // One of Claude's own tasks, stopped from the chat's background-work list. Its task_notification
@@ -297,8 +301,11 @@ async function main() {
         if (!event.sdk_continues) {
           turnActive = false; strayCheck = false;
           // Claude's own background tasks still run: keep the session so they keep running.
-          park = !ended && ownRunning().length > 0;
-          if (park) { parked = true; event.sdk_parked = true; reportBackground(); }
+          park = !ended && (ownRunning().length > 0 || (keepWarm && !event.is_error));
+          if (park) {
+            parked = true; event.sdk_parked = true; reportBackground();
+            if (keepWarm) event.sdk_warm_memory = { bridge_rss_bytes: process.memoryUsage.rss(), native_pid: nativeProcess?.pid };
+          }
         }
       }
       emit(event);

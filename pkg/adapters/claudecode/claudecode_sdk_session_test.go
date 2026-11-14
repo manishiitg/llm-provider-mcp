@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -228,4 +229,95 @@ func TestClaudeSDKBackgroundTaskProgressBridge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SDK task bridge: %v\n%s", err, output)
 	}
+}
+
+// PLAT-746-941: task-free queries must survive two turns, but never leave the
+// laptop retaining all 15–20 chats. Active work and exact pending wakes are not
+// disposable cache entries.
+func TestClaudeSDKWarmSessionBoundAndCleanup(t *testing.T) {
+	start := func(owner string, tasks bool) *claudeSDKSession {
+		life, kill := context.WithCancel(context.Background())
+		cmd := exec.CommandContext(life, "sh", "-c", `while read line; do case "$line" in *stop_background*) exit 0;; esac; done`)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := startClaudeSDKSession(owner, claudeSDKLaunch{"model": {7}}, cmd, stdin, stdout, &claudeLockedBuffer{}, kill, func() {}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			s.closeIfParked("stopped", "stopped", "test_cleanup")
+			s.kill()
+			select {
+			case <-s.exited:
+			case <-time.After(5 * time.Second):
+				t.Error("warm process cleanup stalled")
+			}
+		})
+		s.setNativeID("native-" + owner)
+		s.warm = true
+		if tasks {
+			s.setTasks([]SDKBackgroundTask{{TaskID: "running"}})
+		}
+		s.park()
+		return s
+	}
+	waitExit := func(s *claudeSDKSession) {
+		t.Helper()
+		select {
+		case <-s.exited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("warm query did not close")
+		}
+	}
+	background := start("warm-background", true)
+	var queries []*claudeSDKSession
+	for i := 0; i < claudeSDKWarmLimit; i++ {
+		queries = append(queries, start(fmt.Sprintf("warm-%d", i), false))
+	}
+	// Touch the oldest: the same native query, not a cold resume, becomes MRU.
+	first := queries[0]
+	if takeKeptClaudeSDKSession(first.owner, first.launch, first.nativeID) != first {
+		t.Fatal("the second ordinary turn lost its warm query")
+	}
+	first.park()
+	queries = append(queries, start("warm-new", false))
+	waitExit(queries[1])
+	if first.hasExited() || background.hasExited() || queries[2].hasExited() {
+		t.Fatal("LRU evicted a recent query or running background work")
+	}
+	// Last-task completion used to close its query after the wake grace. A
+	// warm query stays available without losing that grace or wake identity.
+	grace := claudeSDKWakeGrace
+	claudeSDKWakeGrace = 30 * time.Millisecond
+	defer func() { claudeSDKWakeGrace = grace }()
+	if takeKeptClaudeSDKSession(background.owner, background.launch, background.nativeID) != background {
+		t.Fatal("background query could not be reused")
+	}
+	background.park()
+	background.handleKeptLine(`{"type":"sdk_background","background":[]}`)
+	time.Sleep(100 * time.Millisecond)
+	if background.hasExited() {
+		t.Fatal("last-task completion closed the warm query instead of applying the LRU cap")
+	}
+	closeAllKeptClaudeSDKSessions()
+	for _, s := range append(queries, background) {
+		waitExit(s)
+	}
+
+	idle := claudeSDKWarmIdle
+	claudeSDKWarmIdle = 25 * time.Millisecond
+	defer func() { claudeSDKWarmIdle = idle }()
+	expired := start("warm-idle", false)
+	waitExit(expired)
+	stopped := start("warm-stop", false)
+	if !closeKeptClaudeSDKSession(stopped.owner, "stop") {
+		t.Fatal("Stop missed a task-free warm query")
+	}
+	waitExit(stopped)
 }
