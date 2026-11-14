@@ -40,18 +40,20 @@ type SDKBackgroundTask struct {
 }
 
 // SDKHelperTask is lifecycle evidence from this query's native Agent tasks.
-// No child prompt, command, tool output or secret value is copied into it.
+// No child prompt or tool output is copied; shell commands use the shared short redacted label.
 type SDKHelperTask struct {
-	Kind        string `json:"kind,omitempty"`
-	TotalTokens *int64 `json:"total_tokens,omitempty"`
-	DurationMS  int64  `json:"duration_ms,omitempty"`
-	UpdatedAt   int64  `json:"updated_at,omitempty"`
-	TaskID      string `json:"task_id"`
-	RunID       string `json:"run_id"`
-	ToolUseID   string `json:"tool_use_id"`
-	Description string `json:"description"`
-	StartedAt   int64  `json:"started_at"`
-	State       string `json:"state"`
+	Command        string `json:"command,omitempty"`
+	BackgroundMode string `json:"background_mode,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	TotalTokens    *int64 `json:"total_tokens,omitempty"`
+	DurationMS     int64  `json:"duration_ms,omitempty"`
+	UpdatedAt      int64  `json:"updated_at,omitempty"`
+	TaskID         string `json:"task_id"`
+	RunID          string `json:"run_id"`
+	ToolUseID      string `json:"tool_use_id"`
+	Description    string `json:"description"`
+	StartedAt      int64  `json:"started_at"`
+	State          string `json:"state"`
 }
 
 type SDKHelperUpdate struct {
@@ -72,6 +74,7 @@ func SetSDKHelperListener(listener func(SDKHelperUpdate)) {
 }
 
 func (s *claudeSDKSession) observeHelper(task SDKHelperTask) {
+	task.Command = claudeBackgroundCommandLabel(task.Command)
 	if task.TaskID == "" {
 		return
 	}

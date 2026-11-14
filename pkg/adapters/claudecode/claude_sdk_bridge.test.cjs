@@ -123,7 +123,8 @@ export function query({ prompt }) {
 test('background task progress retains only its own usage and real bookends', () => {
   const updates = [], tasks = createHelperTracker(event => updates.push(event.helper), true);
   const send = (subtype, task_id, extra = {}) => tasks.observe({ type: 'system', subtype, task_id, run_id: '1', ...extra });
-  send('task_started', 'shell', { task_type: 'local_bash' });
+  tasks.observe({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'shell-tool', name: 'Bash', input: { command: 'deploy.sh verify', run_in_background: true } }] } });
+  send('task_started', 'shell', { task_type: 'local_bash', tool_use_id: 'shell-tool' });
   assert.equal(tasks.running(), false);
   send('task_started', 'agent-a', { task_type: 'local_agent' });
   send('task_started', 'agent-b', { task_type: 'local_agent' });
@@ -136,4 +137,18 @@ test('background task progress retains only its own usage and real bookends', ()
   assert.equal(updates.findLast(task => task.task_id === 'shell').total_tokens, undefined);
   assert.equal(updates.findLast(task => task.task_id === 'shell').state, 'finished');
   assert.equal(tasks.running(), true); // agent-b, not the finished shell
+});
+
+// Ordinary CLI-managed Bash ids must not become extra background rows.
+test('shell rows require explicit background or an observed timeout', () => {
+  for (const mode of ['ordinary', 'explicit', 'auto']) {
+    const updates = [], tracker = createHelperTracker(e => updates.push(e.helper), true);
+    tracker.observe({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'bash', name: 'Bash', input: { command: 'deploy.sh verify', run_in_background: mode === 'explicit' } }] } });
+    tracker.observe({ type: 'user', toolUseResult: { backgroundTaskId: 'bg', ...(mode === 'auto' ? { timedOutAfterMs: 1000 } : {}) }, message: { content: [{ type: 'tool_result', tool_use_id: 'bash' }] } });
+    tracker.observe({ type: 'system', subtype: 'task_started', task_type: 'local_bash', tool_use_id: 'bash', task_id: 'bg', run_id: '1' });
+    tracker.observe({ type: 'system', subtype: 'task_notification', task_type: 'local_bash', tool_use_id: 'bash', task_id: 'bg', run_id: '1', status: 'completed' });
+    assert.equal(updates.length, mode === 'ordinary' ? 0 : 2);
+    for (const task of updates) { assert.equal(task.command, 'deploy.sh verify'); assert.equal(task.background_mode, mode); }
+    assert.equal(tracker.running(), false);
+  }
 });
