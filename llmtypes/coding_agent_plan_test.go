@@ -8,7 +8,7 @@ func TestCodingAgentPlanNativeSchemas(t *testing.T) {
 		{"Claude", "todos", `{"todos":[{"content":"Inspect","status":"in_progress"}]}`},
 		{"Codex", "plan", `{"plan":[{"step":"Inspect","status":"in_progress"}]}`},
 		{"Cursor", "todos", `{"todos":[{"id":"native","content":"Inspect","status":"inProgress"}]}`},
-		{"Muse", "items", `{"items":[{"text":"Inspect","status":"inProgress"}]}`},
+		{"Muse", "items", `{"items":[{"text":"Inspect","status":"inProgress"},{"text":"Discarded","status":"cancelled"},{"text":"  ","status":"pending"}]}`},
 		{"ACP", "entries", `{"entries":[{"content":"Inspect","status":"in_progress"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
