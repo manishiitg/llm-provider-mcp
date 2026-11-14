@@ -25,6 +25,7 @@ type codexAppSession struct {
 	rpc                          *codexRPC
 	threadID, turnID, cwd, model string
 	fingerprint                  [32]byte
+	fingerprintParts             map[string][32]byte
 	status                       *llmtypes.StatusLine
 	// A successful steer response acknowledges acceptance; the corresponding
 	// userMessage item is the durable acknowledgement, scoped to this send.
@@ -296,22 +297,36 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		return nil, err
 	}
 	fingerprint := sha256.Sum256(raw)
+	parts := codexFingerprintParts(config)
 	s.mu.Lock()
 	r := s.rpc
 	thread := s.threadID
 	oldFingerprint := s.fingerprint
+	oldParts := s.fingerprintParts
 	s.mu.Unlock()
+	reason := "cold"
+	if r != nil {
+		reason = "reuse"
+	}
 	if r != nil {
 		select {
 		case <-r.done:
+			reason = "process_exited"
 			r.close()
 			r = nil
 		default:
 		}
 	}
 	if r != nil && (oldFingerprint != fingerprint || (resume != "" && resume != thread)) {
+		reason = "resume_changed"
+		if oldFingerprint != fingerprint {
+			reason = "fingerprint_changed"
+		}
 		r.close()
 		r = nil
+	}
+	if c.logger != nil {
+		c.logger.Infof("[CODEX_WARM] owner=%s persistent=%t action=%s changed=%s", owner, persistent, reason, codexFingerprintChanges(oldParts, parts))
 	}
 	if r == nil {
 		if oldFingerprint != ([32]byte{}) && oldFingerprint != fingerprint {
@@ -384,6 +399,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		s.cwd = cwd
 		s.model = result.Model
 		s.fingerprint = fingerprint
+		s.fingerprintParts = parts
 		s.status = nil
 		s.rateLimits = nil
 		s.mu.Unlock()
@@ -631,4 +647,39 @@ func codexAppTurnParams(thread, prompt string, opts *llmtypes.CallOptions) map[s
 	}
 	params["summary"] = summary
 	return params
+}
+
+// Digests are retained privately only; logs expose fixed category names, never
+// prompts, paths, environment, custom metadata keys or their values.
+func codexFingerprintParts(config map[string]any) map[string][32]byte {
+	parts := map[string][32]byte{}
+	custom := map[string]any{}
+	for k, value := range config {
+		switch k {
+		case "model", "cwd", "runtime_dir", "system", "native_questions", "security", "env":
+			raw, _ := json.Marshal(value)
+			parts[k] = sha256.Sum256(raw)
+		default:
+			custom[k] = value
+		}
+	}
+	raw, _ := json.Marshal(custom)
+	parts["custom"] = sha256.Sum256(raw)
+	return parts
+}
+
+func codexFingerprintChanges(old, current map[string][32]byte) string {
+	if len(old) == 0 {
+		return "initial"
+	}
+	var changed []string
+	for _, key := range []string{"model", "cwd", "runtime_dir", "system", "native_questions", "security", "env", "custom"} {
+		if old[key] != current[key] {
+			changed = append(changed, key)
+		}
+	}
+	if len(changed) == 0 {
+		return "none"
+	}
+	return strings.Join(changed, ",")
 }
