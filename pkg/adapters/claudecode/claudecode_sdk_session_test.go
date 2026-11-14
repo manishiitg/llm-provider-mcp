@@ -276,6 +276,9 @@ func TestClaudeSDKWarmSessionBoundAndCleanup(t *testing.T) {
 		}
 	}
 	background := start("warm-background", true)
+	if background.closeIfParked("stopped", "stopped", "idle_compaction") {
+		t.Fatal("idle compaction stopped real background work")
+	}
 	var queries []*claudeSDKSession
 	for i := 0; i < claudeSDKWarmLimit; i++ {
 		queries = append(queries, start(fmt.Sprintf("warm-%d", i), false))

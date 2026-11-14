@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func TestClaudeResumeInstructionsRetryAndMarkerLinks(t *testing.T) {
 // their digest still suppressed redelivery. Stub only the CLI; exercise the
 // actual stream consumer, successful-turn defer, and next-turn prompt builder.
 func TestClaudeCompactionRestatesCurrentInstructionsNextTurn(t *testing.T) {
-	for _, scenario := range []string{"auto", "idle", "failed"} {
+	for _, scenario := range []string{"auto", "idle", "idle_warm", "failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			opts := &llmtypes.CallOptions{CLIRuntimeDir: root, Metadata: &llmtypes.Metadata{Custom: map[string]interface{}{MetadataKeyWorkingDir: root, MetadataKeyResumeSessionID: "native-id"}}}
@@ -69,8 +70,29 @@ func TestClaudeCompactionRestatesCurrentInstructionsNextTurn(t *testing.T) {
 			if scenario == "failed" {
 				output = `{"type":"system","subtype":"status","status":"compacting","session_id":"native-id"}` + "\n" + `{"type":"system","subtype":"status","status":null,"compact_result":"failed","session_id":"native-id"}`
 			}
-			if scenario == "idle" {
+			if scenario == "idle" || scenario == "idle_warm" {
 				llmtypes.WithCodingProviderIdleCompact()(opts)
+			}
+			if scenario == "idle_warm" {
+				owner := "compacting-warm-chat"
+				WithInteractiveSessionID(owner)(opts)
+				life, kill := context.WithCancel(context.Background())
+				cmd := exec.CommandContext(life, "sh", "-c", `while read line; do case "$line" in *stop_background*) exit 0;; esac; done`)
+				stdin, err := cmd.StdinPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				stdout, err := cmd.StdoutPipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				s, err := startClaudeSDKSession(owner, nil, cmd, stdin, stdout, &claudeLockedBuffer{}, kill, func() {}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { kill(); <-s.exited })
+				s.warm = true
+				s.park()
 			}
 			output += "\n" + `{"type":"result","is_error":false,"session_id":"native-id","result":"done"}` + "\n"
 			script := "#!/bin/sh\ncat <<'RESULT'\n" + output + "RESULT\n"
