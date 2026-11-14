@@ -55,6 +55,16 @@ type museRPC struct {
 func (r *museRPC) write(v any) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
+	if stream, ok := v.(museStreamingParams); ok {
+		err := stream.writeJSON(r.stdin)
+		if err == nil {
+			_, err = io.WriteString(r.stdin, "\n")
+		}
+		if err != nil {
+			r.finish(fmt.Errorf("Muse image request write failed"))
+		}
+		return err
+	}
 	return json.NewEncoder(r.stdin).Encode(v)
 }
 
@@ -68,10 +78,30 @@ func (r *museRPC) call(ctx context.Context, method string, params any, result an
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.pending, string(key)); r.mu.Unlock() }()
 	request := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
-	if params != nil {
+	var frame any = request
+	image, streaming := params.(*museImageParams)
+	if streaming {
+		frame = &museImageRequest{header: request, params: image}
+	} else if params != nil {
 		request["params"] = params
 	}
-	if err := r.write(request); err != nil {
+	if streaming {
+		written := make(chan error, 1)
+		go func() { written <- r.write(frame) }()
+		select {
+		case err := <-written:
+			if err != nil {
+				return fmt.Errorf("muse serve %s: %w", method, err)
+			}
+		case <-ctx.Done():
+			r.finish(ctx.Err())
+			<-written
+			return ctx.Err()
+		case <-r.done:
+			<-written
+			return r.failure()
+		}
+	} else if err := r.write(frame); err != nil {
 		return fmt.Errorf("muse serve %s: %w", method, err)
 	}
 	select {
