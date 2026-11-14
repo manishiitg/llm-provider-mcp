@@ -166,7 +166,7 @@ func claudeSDKParamsWithImages(ctx context.Context, owner string, base map[strin
 	return p, func() { p.close() }, nil
 }
 
-func finishClaudeImageDelivery(owner string, params any, err error) {
+func finishClaudeImageDelivery(owner string, params any, err error, successReason string) {
 	p, ok := params.(*claudeSDKImageParams)
 	if !ok {
 		return
@@ -175,9 +175,15 @@ func finishClaudeImageDelivery(owner string, params any, err error) {
 	for _, image := range p.images {
 		n += image.bytes
 	}
-	action, reason := "done", "accepted"
+	action, reason := "done", successReason
 	if err != nil {
-		action, reason = "failed", "native_rpc_failed"
+		action, reason = "failed", "native_input_failed"
+		if errors.Is(err, llmtypes.ErrCodingAgentInputNotSent) {
+			reason = "input_not_sent"
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			reason = "canceled"
+		}
 	}
 	log.Printf("[CHAT_IMAGE] session=%s provider=claude-code images=%d bytes=%d native=true action=%s reason=%s", owner, len(p.images), n, action, reason)
 }

@@ -253,7 +253,7 @@ func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) (c
 			return err
 		}
 	}
-	defer func() { finishClaudeImageDelivery(p.session.owner, request, controlErr); closeImages() }()
+	defer func() { finishClaudeImageDelivery(p.session.owner, request, controlErr, "accepted"); closeImages() }()
 	// Preparing an image can outlast the native turn. Never write it into a
 	// completed turn or treat that definite refusal as uncertain delivery.
 	select {
