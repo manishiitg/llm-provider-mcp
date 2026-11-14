@@ -518,6 +518,24 @@ func TestCodexGoalWakePauseAndRestoreStayOnTheOwnedGoal(t *testing.T) {
 	if err != nil || update == nil || update.NativeSessionID != "thread" || update.Provider != "codex-cli" {
 		t.Fatal("control result lost exact native identity", err)
 	}
+	for _, action := range []string{"pause", "wake_pause"} {
+		quotaRPC, _ := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+			status := "usageLimited"
+			if request.Method == "thread/goal/set" {
+				status = "paused"
+			}
+			return codexRPCMessage{Result: goalWire(status)}
+		})
+		session.mu.Lock()
+		session.rpc = quotaRPC
+		session.mu.Unlock()
+		update, err := ControlCodexNativeGoal(context.Background(), owner, action)
+		if err != nil || update.Goal == nil || update.Goal.Status != "paused" || session.goalPausedForWake != (action == "wake_pause") {
+			t.Fatal("usage-limited goal pause was not confirmed", action, err)
+		}
+		quotaRPC.close()
+	}
+
 }
 
 // A wake pause must not kill native background work merely because the caller
