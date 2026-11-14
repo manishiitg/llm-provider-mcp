@@ -72,7 +72,7 @@ func readCodexGoal(ctx context.Context, s *codexAppSession, r *codexRPC, thread 
 		var rpcError *codexRPCRequestError
 		if errors.As(err, &rpcError) && rpcError.Code == -32601 {
 			log.Printf("[AGENT_GOAL] session=%s native=%s action=skipped status=unavailable reason=unsupported_native_goal", s.owner, thread)
-			return nil, &llmtypes.NativeGoalUnavailableError{Program: "this Codex version"}
+			return nil, llmtypes.NativeGoalUnavailable("this Codex version")
 		}
 		log.Printf("[AGENT_GOAL] session=%s native=%s action=failed status=unknown reason=goal_get_failed", s.owner, thread)
 		return nil, fmt.Errorf("Codex could not read the native goal")
@@ -115,13 +115,13 @@ func setCodexGoalStatus(ctx context.Context, s *codexAppSession, r *codexRPC, th
 func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtypes.NativeGoal, error) {
 	s := codexAppSessionForOwner(owner)
 	if s == nil {
-		return nil, &llmtypes.NativeGoalUnavailableError{Program: "this Codex session"}
+		return nil, llmtypes.NativeGoalUnavailable("this Codex session")
 	}
 	s.mu.Lock()
 	r, thread := s.rpc, s.threadID
 	s.mu.Unlock()
 	if r == nil || thread == "" {
-		return nil, &llmtypes.NativeGoalUnavailableError{Program: "this Codex session"}
+		return nil, llmtypes.NativeGoalUnavailable("this Codex session")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
