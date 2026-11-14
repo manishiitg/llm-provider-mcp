@@ -212,3 +212,43 @@ export function query({ prompt }) {
   }
   assert.ok(events.some(event => event.type === 'sdk_control_result' && event.id === 'stop'));
 });
+
+test('PLAT-746-1000 native images reach prompt and steer but never echo into host events', { timeout: 5000 }, async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'sdk-images-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  const data = Buffer.from('native-image-fixture').toString('base64');
+  writeFileSync(join(folder, 'sdk.mjs'), `
+export function query({ prompt }) {
+  const iterator = (async function* () {
+    for (const expected of ['Inspect this file', 'A follow-up']) {
+      const next = await prompt.next();
+      const content = next.value.message.content;
+      if (!Array.isArray(content) || content[0]?.text !== expected || content[1]?.type !== 'image' || content[1]?.source?.type !== 'base64' || content[1]?.source?.media_type !== 'image/png' || content[1]?.source?.data !== '${data}') throw new Error('native image content lost');
+      yield { type: 'user', uuid: next.value.uuid, message: next.value.message };
+    }
+    yield { type: 'result', result: 'Images received' };
+  })();
+  iterator.close = () => {};
+  return iterator;
+}`);
+  const child = spawn(process.execPath, [join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AGENTWORKS_CLI_LAUNCH: '' } });
+  t.after(() => child.kill());
+  const events = []; let pending = '', stderr = '', raw = '', sent = false;
+  child.stderr.on('data', value => stderr += value);
+  child.stdout.on('data', value => {
+    raw += value; pending += value;
+    while (pending.includes('\n')) {
+      const end = pending.indexOf('\n'), event = JSON.parse(pending.slice(0, end)); pending = pending.slice(end + 1); events.push(event);
+      if (event.type === 'user' && !sent) {
+        sent = true;
+        child.stdin.write(JSON.stringify({ type: 'steer', id: 'image-steer', text: 'A follow-up', images: [{ mediaType: 'image/png', data }] }) + '\n');
+      }
+    }
+  });
+  const finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
+  child.stdin.write(JSON.stringify({ type: 'prompt', text: 'Inspect this file', images: [{ mediaType: 'image/png', data }] }) + '\n');
+  await finished;
+  assert.equal(raw.includes(data), false, 'image bytes leaked through the user echo');
+  assert.ok(events.some(event => event.type === 'sdk_control_result' && event.id === 'image-steer' && !event.is_error));
+  assert.ok(events.some(event => event.type === 'result' && event.result === 'Images received'));
+});

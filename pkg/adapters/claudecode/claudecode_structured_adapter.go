@@ -189,7 +189,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		}
 		prompt = claudeIdleCompactCommand
 	}
-	if strings.TrimSpace(prompt) == "" {
+	if strings.TrimSpace(prompt) == "" && (!c.sdkTransport || !claudeSDKHasPendingImages(ctx, claudeInteractiveSessionIDFromOptions(opts), conversationMessages)) {
 		return nil, fmt.Errorf("claude-code prompt is empty")
 	}
 
@@ -460,7 +460,28 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		if adoptWake {
 			request = map[string]any{"type": "adopt", "keep_warm": keepAllowed}
 		}
-		if err := sdkProcess.write(request); err != nil {
+		var input any = request
+		closeImages := func() {}
+		if !adoptWake {
+			input, closeImages, err = claudeSDKParamsWithImages(ctx, owner, request, conversationMessages)
+			if err != nil {
+				sess.kill()
+				<-sess.exited
+				return nil, err
+			}
+		}
+		if strings.TrimSpace(prompt) == "" {
+			if prepared, ok := input.(*claudeSDKImageParams); !ok || len(prepared.images) == 0 {
+				closeImages()
+				sess.kill()
+				<-sess.exited
+				return nil, fmt.Errorf("The image could not be sent and there is no text to deliver")
+			}
+		}
+		inputErr := sdkProcess.write(input)
+		finishClaudeImageDelivery(owner, input, inputErr)
+		closeImages()
+		if err := inputErr; err != nil {
 			sess.kill()
 			<-sess.exited
 			return nil, fmt.Errorf("Claude SDK input: %w", err)

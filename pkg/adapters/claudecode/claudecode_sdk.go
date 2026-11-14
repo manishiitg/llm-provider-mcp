@@ -103,7 +103,13 @@ func ClaudeSDKSessionActive(ownerSessionID string) bool {
 }
 
 func (p *claudeSDKProcess) write(value any) error {
-	return p.session.input.write(value)
+	err := p.session.input.write(value)
+	if err != nil {
+		if _, streaming := value.(claudeSDKStreamingParams); streaming {
+			p.session.kill()
+		}
+	}
+	return err
 }
 
 func claudeSDKEntry() (string, error) {
@@ -234,9 +240,26 @@ func (p *claudeSDKProcess) steer(ctx context.Context, message string) error {
 	return p.control(ctx, "steer", message)
 }
 
-func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) error {
+func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) (controlErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	var request any = map[string]any{"type": kind, "text": message}
+	closeImages := func() {}
+	if kind == "steer" {
+		var err error
+		request, closeImages, err = claudeSDKParamsWithImages(ctx, p.session.owner, request.(map[string]any), nil)
+		if err != nil {
+			return err
+		}
+	}
+	defer func() { finishClaudeImageDelivery(p.session.owner, request, controlErr); closeImages() }()
+	// Preparing an image can outlast the native turn. Never write it into a
+	// completed turn or treat that definite refusal as uncertain delivery.
+	select {
+	case <-p.done:
+		return fmt.Errorf("%w: Claude SDK turn ended during input preparation", llmtypes.ErrCodingAgentInputNotSent)
+	default:
 	}
 	id := randomHex(12)
 	reply := make(chan error, 1)
@@ -253,7 +276,13 @@ func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) er
 	}
 	p.controlsMu.Unlock()
 	defer func() { p.controlsMu.Lock(); delete(p.controls, id); p.controlsMu.Unlock() }()
-	if err := p.write(map[string]any{"type": kind, "id": id, "text": message}); err != nil {
+	switch payload := request.(type) {
+	case map[string]any:
+		payload["id"] = id
+	case *claudeSDKImageParams:
+		payload.base["id"] = id
+	}
+	if err := p.write(request); err != nil {
 		return err
 	}
 	select {

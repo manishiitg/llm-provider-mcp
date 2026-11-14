@@ -5,7 +5,25 @@ const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { rmSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
-const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
+// Native user echoes may include image bytes. They stay inside the SDK's own
+// conversation, never in the host event stream or its JSON/history buffers.
+const emit = value => process.stdout.write(JSON.stringify(value, (key, entry) =>
+  key === 'source' && entry?.type === 'base64' && typeof entry.data === 'string'
+    ? { ...entry, data: '[native image omitted]' } : entry) + '\n');
+
+function sdkUserContent(request) {
+  const images = request.images || [];
+  if (!images.length) return request.text;
+  return [...(request.text ? [{ type: 'text', text: request.text }] : []),
+    ...images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.data } }))];
+}
+function takeSDKContent(input) {
+  const content = input.content;
+  // Only the SDK consumer owns the yielded content; our waiting queue and
+  // generator bookkeeping retain no image data after this delivery.
+  input.content = undefined;
+  return content;
+}
 let nativeErrorReported = false;
 const deny = () => ({ behavior: 'deny', message: 'The request was cancelled. Use the chat or account setup to continue.' });
 
@@ -177,7 +195,7 @@ async function main() {
           const uuid = randomUUID();
           strayCheck = parked && parkedTurnRunning;
           parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
-          input.push({ text: request.text, uuid }); wake?.(); resolve();
+          input.push({ content: sdkUserContent(request), uuid }); wake?.(); resolve();
         }
         else if (request.type === 'adopt') {
           keepWarm = request.keep_warm === true;
@@ -194,7 +212,7 @@ async function main() {
             const uuid = randomUUID();
             steering.set(uuid, request.id);
             unsettled.add(uuid);
-            input.push({ text: request.text, uuid, priority: 'now' });
+            input.push({ content: sdkUserContent(request), uuid, priority: 'now' });
             wake?.();
           }
         }
@@ -232,7 +250,7 @@ async function main() {
       const next = input.shift();
       // Native human priority-now delivery lets movable tools step aside while
       // the running conversation takes the new direction (PLAT-872-47).
-      yield { type: 'user', message: { role: 'user', content: next.text }, parent_tool_use_id: null,
+      yield { type: 'user', message: { role: 'user', content: takeSDKContent(next) }, parent_tool_use_id: null,
         uuid: next.uuid, priority: next.priority, origin: { kind: 'human' } };
     }
   }
