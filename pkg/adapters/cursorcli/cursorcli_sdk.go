@@ -847,6 +847,10 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 				if strings.TrimSpace(final) == "" && len(tools) == 0 {
 					return nil, fmt.Errorf("Cursor returned no answer")
 				}
+				if err := cursorTransportFailure(final, s.model); err != nil {
+					c.logger.Infof("[CURSOR_SDK] transport_failure agent=%s: the turn's whole reply was a transport error", s.agentID)
+					return nil, err
+				}
 				var usage *llmtypes.Usage
 				if u := event.Usage; u != nil {
 					cached := u.CacheReadTokens
