@@ -152,3 +152,15 @@ test('shell rows require explicit background or an observed timeout', () => {
     assert.equal(tracker.running(), false);
   }
 });
+
+test('helper type and description follow task-owned live progress without a poller', () => {
+  const updates = [], tracker = createHelperTracker(e => updates.push(e.helper), true);
+  tracker.observe({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'explore-tool', name: 'Agent', input: { subagent_type: 'Explore', description: 'Find routing code', run_in_background: true } }] } });
+  tracker.observe({ type: 'system', subtype: 'task_started', task_id: 'explore', tool_use_id: 'explore-tool', task_type: 'local_agent', run_id: '1' });
+  tracker.observe({ type: 'system', subtype: 'task_progress', task_id: 'explore', tool_use_id: 'explore-tool', run_id: '1', description: 'Grepping coding.go', usage: { total_tokens: 154200, duration_ms: 288000 } });
+  const latest = updates.at(-1);
+  assert.equal(latest.helper_type, 'Explore');
+  assert.equal(latest.helper_description, 'Find routing code');
+  assert.equal(latest.current_step, 'Grepping coding.go');
+  assert.equal(latest.total_tokens, 154200);
+});

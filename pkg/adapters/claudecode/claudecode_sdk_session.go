@@ -42,18 +42,22 @@ type SDKBackgroundTask struct {
 // SDKHelperTask is lifecycle evidence from this query's native Agent tasks.
 // No child prompt or tool output is copied; shell commands use the shared short redacted label.
 type SDKHelperTask struct {
-	Command        string `json:"command,omitempty"`
-	BackgroundMode string `json:"background_mode,omitempty"`
-	Kind           string `json:"kind,omitempty"`
-	TotalTokens    *int64 `json:"total_tokens,omitempty"`
-	DurationMS     int64  `json:"duration_ms,omitempty"`
-	UpdatedAt      int64  `json:"updated_at,omitempty"`
-	TaskID         string `json:"task_id"`
-	RunID          string `json:"run_id"`
-	ToolUseID      string `json:"tool_use_id"`
-	Description    string `json:"description"`
-	StartedAt      int64  `json:"started_at"`
-	State          string `json:"state"`
+	HelperType        string `json:"helper_type,omitempty"`
+	HelperDescription string `json:"helper_description,omitempty"`
+	HelperMode        string `json:"helper_mode,omitempty"`
+	CurrentStep       string `json:"current_step,omitempty"`
+	Command           string `json:"command,omitempty"`
+	BackgroundMode    string `json:"background_mode,omitempty"`
+	Kind              string `json:"kind,omitempty"`
+	TotalTokens       *int64 `json:"total_tokens,omitempty"`
+	DurationMS        int64  `json:"duration_ms,omitempty"`
+	UpdatedAt         int64  `json:"updated_at,omitempty"`
+	TaskID            string `json:"task_id"`
+	RunID             string `json:"run_id"`
+	ToolUseID         string `json:"tool_use_id"`
+	Description       string `json:"description"`
+	StartedAt         int64  `json:"started_at"`
+	State             string `json:"state"`
 }
 
 type SDKHelperUpdate struct {
@@ -75,6 +79,9 @@ func SetSDKHelperListener(listener func(SDKHelperUpdate)) {
 
 func (s *claudeSDKSession) observeHelper(task SDKHelperTask) {
 	task.Command = claudeBackgroundCommandLabel(task.Command)
+	task.HelperType = commandlabel.Label(task.HelperType)
+	task.HelperDescription = commandlabel.Label(task.HelperDescription)
+	task.CurrentStep = commandlabel.Label(task.CurrentStep)
 	if task.TaskID == "" {
 		return
 	}
@@ -106,6 +113,18 @@ func (s *claudeSDKSession) observeHelper(task SDKHelperTask) {
 		}
 		if task.TotalTokens == nil {
 			task.TotalTokens = previous.TotalTokens
+		}
+		if task.HelperType == "" {
+			task.HelperType = previous.HelperType
+		}
+		if task.HelperDescription == "" {
+			task.HelperDescription = previous.HelperDescription
+		}
+		if task.HelperMode == "" {
+			task.HelperMode = previous.HelperMode
+		}
+		if task.CurrentStep == "" {
+			task.CurrentStep = previous.CurrentStep
 		}
 		if task.Kind == "" {
 			task.Kind = previous.Kind

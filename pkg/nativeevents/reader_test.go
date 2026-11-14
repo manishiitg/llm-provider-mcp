@@ -3,6 +3,8 @@ package nativeevents
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,11 +30,11 @@ func TestNativeRecordConformance(t *testing.T) {
 {"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1","isAsync":true},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
 {"type":"user","uuid":"notice1","parentUuid":"result1","turnOrigin":"task_notification","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>task1</task-id><tool-use-id>tool1</tool-use-id><status>completed</status></task-notification>"}}
 {"type":"assistant","uuid":"a2","parentUuid":"notice1","message":{"id":"msg-helper","content":[{"type":"thinking","thinking":"PRIVATE_THOUGHT"},{"type":"text","text":"The helper finished."}]}}
-`, []string{"turn:started", "tool:started", "helper:started", "helper:finished", "turn:started", "reply:committed"}},
+`, []string{"turn:started", "tool:started", "helper:started", "tool:finished", "helper:started", "helper:finished", "turn:started", "reply:committed"}},
 		{"claude-code", `{"type":"user","uuid":"u1","origin":{"kind":"human"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"tool1","name":"Agent"}]}}
 {"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"agentId":"task1","isAsync":false},"message":{"content":[{"type":"tool_result","tool_use_id":"tool1"}]}}
-`, []string{"turn:started", "tool:started", "tool:finished"}},
+`, []string{"turn:started", "tool:started", "helper:started", "tool:finished", "helper:finished"}},
 		{"claude-code", `{"type":"user","uuid":"u1","origin":{"kind":"human"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash","input":{"run_in_background":false}},{"type":"tool_use","id":"todo1","name":"TaskUpdate"}]}}
 {"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"backgroundTaskId":"command1","timedOutAfterMs":1000},"message":{"content":[{"type":"tool_result","tool_use_id":"bash1"}]}}
@@ -192,6 +194,64 @@ func TestClaudeBackgroundShellClassification(t *testing.T) {
 			}
 			if count != want {
 				t.Fatalf("background rows=%d want %d", count, want)
+			}
+		})
+	}
+}
+
+// PLAT-746-941: start foreground helpers before their result so a long one can
+// appear live; presentation hides the short foreground lifetime, not tool steps.
+func TestClaudeHelperMetadataStartsBeforeForegroundResult(t *testing.T) {
+	for _, asynchronous := range []bool{true, false} {
+		t.Run(fmt.Sprint(asynchronous), func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "helpers.jsonl")
+			rows := `{"type":"user","uuid":"u","timestamp":"2026-11-14T10:00:00Z","origin":{"kind":"human"}}` + "\n" + `{"type":"assistant","uuid":"a","parentUuid":"u","timestamp":"2026-11-14T10:00:00Z","message":{"content":[{"type":"tool_use","id":"helper-tool","name":"Agent","input":{"subagent_type":"Explore","description":"TOKEN=private Grepping coding.go\nDo not retain this line","run_in_background":` + fmt.Sprint(asynchronous) + `}}]}}` + "\n"
+			if err := os.WriteFile(p, []byte(rows), 0600); err != nil {
+				t.Fatal(err)
+			}
+			first, err := Read(context.Background(), "claude-code", "session-test", p, Cursor{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Records) != 3 || first.Records[1].Kind != "tool" || first.Records[2].Kind != "helper" || first.Records[2].State != "started" {
+				t.Fatalf("missing live helper start: %+v", first.Records)
+			}
+			cursor, err := json.Marshal(first.Next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var next Cursor
+			if err = json.Unmarshal(cursor, &next); err != nil {
+				t.Fatal(err)
+			}
+			result := `{"type":"user","uuid":"r","parentUuid":"a","timestamp":"2026-11-14T10:00:05Z","toolUseResult":{"agentId":"helper-id","isAsync":` + fmt.Sprint(asynchronous) + `},"message":{"content":[{"type":"tool_result","tool_use_id":"helper-tool"}]}}` + "\n"
+			f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.WriteString(result)
+			f.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			final, err := Read(context.Background(), "claude-code", "session-test", p, next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(final.Records) != 2 || final.Records[0].Kind != "tool" {
+				t.Fatalf("lost normal step: %+v", final.Records)
+			}
+			for _, h := range []llmtypes.NativeRecord{first.Records[2], final.Records[1]} {
+				if h.HelperType != "Explore" || h.HelperDescription != "Grepping coding.go" || h.Tokens != nil {
+					t.Fatalf("wrong helper facts: %+v", h)
+				}
+			}
+			want := "finished"
+			if asynchronous {
+				want = "started"
+			}
+			if final.Records[1].State != want {
+				t.Fatalf("state=%s", final.Records[1].State)
 			}
 		})
 	}
