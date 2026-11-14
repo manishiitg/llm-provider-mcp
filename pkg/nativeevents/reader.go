@@ -22,21 +22,27 @@ const DecoderVersion = "1"
 const MaxBatchBytes = 8 << 20
 const MaxRecordBytes = 4 << 20
 
+type ShellCommand struct {
+	Label string `json:"label,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+}
+
 type Cursor struct {
-	Offset      int64              `json:"offset"`
-	TurnID      string             `json:"turn_id,omitempty"`
-	Origin      string             `json:"origin,omitempty"`
-	TaskID      string             `json:"task_id,omitempty"`
-	LastID      string             `json:"last_id,omitempty"`
-	PrefixHash  string             `json:"prefix_hash,omitempty"`
-	PrefixBytes int                `json:"prefix_bytes,omitempty"`
-	Tools       map[string]string  `json:"tools,omitempty"`
-	Tasks       map[string]string  `json:"tasks,omitempty"`
-	Rejected    bool               `json:"rejected,omitempty"`
-	FileID      string             `json:"file_id,omitempty"`
-	TailOffset  int64              `json:"tail_offset,omitempty"`
-	TailHash    string             `json:"tail_hash,omitempty"`
-	Lineage     map[string]Lineage `json:"lineage,omitempty"`
+	ShellCommands map[string]ShellCommand `json:"shell_commands,omitempty"`
+	Offset        int64                   `json:"offset"`
+	TurnID        string                  `json:"turn_id,omitempty"`
+	Origin        string                  `json:"origin,omitempty"`
+	TaskID        string                  `json:"task_id,omitempty"`
+	LastID        string                  `json:"last_id,omitempty"`
+	PrefixHash    string                  `json:"prefix_hash,omitempty"`
+	PrefixBytes   int                     `json:"prefix_bytes,omitempty"`
+	Tools         map[string]string       `json:"tools,omitempty"`
+	Tasks         map[string]string       `json:"tasks,omitempty"`
+	Rejected      bool                    `json:"rejected,omitempty"`
+	FileID        string                  `json:"file_id,omitempty"`
+	TailOffset    int64                   `json:"tail_offset,omitempty"`
+	TailHash      string                  `json:"tail_hash,omitempty"`
+	Lineage       map[string]Lineage      `json:"lineage,omitempty"`
 }
 
 type Lineage struct {
@@ -75,7 +81,7 @@ func Capabilities(provider string) []string {
 }
 
 // Read consumes newline-terminated records only. The caller persists Next only
-// after accepting every emitted event. Cursor state contains identities, never
+// after accepting every emitted event. Cursor state contains identities and redacted shell labels, never
 // prompts, results, reasoning, account limits or secret values.
 func Read(ctx context.Context, provider, sessionID, path string, cursor Cursor) (Batch, error) {
 	b := Batch{Next: cloneCursor(cursor), Unknown: map[string]int{}}
@@ -169,6 +175,10 @@ func Read(ctx context.Context, provider, sessionID, path string, cursor Cursor) 
 
 func cloneCursor(c Cursor) Cursor {
 	n := c
+	n.ShellCommands = map[string]ShellCommand{}
+	for k, v := range c.ShellCommands {
+		n.ShellCommands[k] = v
+	}
 	n.Tools, n.Tasks, n.Lineage = map[string]string{}, map[string]string{}, map[string]Lineage{}
 	for k, v := range c.Tools {
 		n.Tools[k] = v
