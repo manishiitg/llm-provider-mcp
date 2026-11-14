@@ -16,7 +16,7 @@ import (
 
 const codexGoalObjectiveMaxChars = 4000
 
-var codexGoalFollowupWait = 5 * time.Second
+var codexGoalFollowupWait = 30 * time.Second
 
 type codexThreadGoal struct {
 	Objective       string `json:"objective"`

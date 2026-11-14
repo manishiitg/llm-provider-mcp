@@ -1,11 +1,15 @@
 package codexcli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -313,4 +317,94 @@ func TestCodexGoalAbandonedStartupCannotLeaveAnActiveGoal(t *testing.T) {
 	if err != nil || session.goalActivationPending {
 		t.Fatal("explicit clear retained activation guard")
 	}
+}
+
+// PLAT-746-988: non-persistent cleanup belongs to the complete Generate call,
+// not each native goal turn. Use a subprocess wire fixture, not a real AI CLI.
+func TestCodexGoalNonPersistentCallKeepsProcessAcrossNativeTurns(t *testing.T) {
+	if os.Getenv("AGENTWORKS_GOAL_RPC_FIXTURE") == "1" {
+		var mu sync.Mutex
+		send := func(v any) { mu.Lock(); defer mu.Unlock(); _ = json.NewEncoder(os.Stdout).Encode(v) }
+		notify := func(method, body string) { send(codexRPCMessage{Method: method, Params: json.RawMessage(body)}) }
+		scan := bufio.NewScanner(os.Stdin)
+		for scan.Scan() {
+			var req codexRPCMessage
+			if json.Unmarshal(scan.Bytes(), &req) != nil {
+				os.Exit(2)
+			}
+			if len(req.ID) == 0 {
+				continue
+			}
+			result := json.RawMessage(`{}`)
+			activate := false
+			switch req.Method {
+			case "thread/start":
+				result = json.RawMessage(`{"thread":{"id":"fixture-thread"}}`)
+			case "thread/goal/get":
+				result = json.RawMessage(`{"goal":null}`)
+			case "turn/start":
+				result = json.RawMessage(`{"turn":{"id":"first"}}`)
+			case "thread/goal/set":
+				var params struct {
+					Status string `json:"status"`
+				}
+				_ = json.Unmarshal(req.Params, &params)
+				result = goalWire(params.Status)
+				activate = params.Status == "active"
+			}
+			send(codexRPCMessage{ID: req.ID, Result: result})
+			if activate {
+				go func() {
+					notify("turn/completed", `{"threadId":"fixture-thread","turn":{"id":"first","status":"completed"}}`)
+					// Leave an actual gap after first completion, while the parent still
+					// owns this non-persistent process. No host second turn is requested.
+					time.Sleep(30 * time.Millisecond)
+					notify("turn/started", `{"threadId":"fixture-thread","turn":{"id":"second","status":"inProgress"}}`)
+					notify("item/completed", `{"threadId":"fixture-thread","turnId":"second","item":{"id":"answer","type":"agentMessage","text":"native second turn"}}`)
+					notify("thread/goal/updated", `{"threadId":"fixture-thread","goal":{"objective":"Finish the task","status":"complete"}}`)
+					notify("turn/completed", `{"threadId":"fixture-thread","turn":{"id":"second","status":"completed"}}`)
+				}()
+			}
+		}
+		os.Exit(0)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	// The selected process is this test's protocol fixture; no installed Codex,
+	// login, model, network or sandbox-policy changes participate.
+	wrapper := "#!/bin/sh\nexec " + shellQuoteGoalFixture(binary) + " -test.run '^TestCodexGoalNonPersistentCallKeepsProcessAcrossNativeTurns$'\n"
+	if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AGENTWORKS_GOAL_RPC_FIXTURE", "1")
+	owner := "goal-nonpersistent-fixture"
+	t.Cleanup(func() { closeCodexAppSession(owner) })
+	opts := &llmtypes.CallOptions{}
+	WithInteractiveSessionID(owner)(opts)
+	WithProjectDirID(dir)(opts)
+	// Leave persistence unspecified: this is the default non-persistent lane.
+	if codexPersistentInteractiveFromOptions(opts) {
+		t.Fatal("fixture accidentally persistent")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = llmtypes.WithNativeGoalCommand(ctx, llmtypes.NativeGoalCommand{SessionID: owner, Action: "set", Objective: "Finish the task"})
+	response, err := NewCodexCLIAdapter("", "codex-cli", &MockLogger{}).generateContentAppServer(ctx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "/goal Finish the task")}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Choices) == 0 || !strings.Contains(response.Choices[0].Content, "native second turn") {
+		t.Fatal("non-persistent call ended at the first native goal turn")
+	}
+	if codexAppSessionForOwner(owner) != nil {
+		t.Fatal("non-persistent call did not clean up after terminal goal")
+	}
+}
+
+func shellQuoteGoalFixture(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
