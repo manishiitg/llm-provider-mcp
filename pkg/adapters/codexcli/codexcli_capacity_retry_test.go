@@ -74,4 +74,20 @@ func TestCodexCapacityRetryContinuesEmptyInputAndCaps(t *testing.T) {
 			t.Fatalf("always=%t starts=%d retries=%d err=%v", always, w.starts, retries, err)
 		}
 	}
+	// Stop during backoff must not send another turn/start.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &codexRPC{events: make(chan codexRPCMessage, 1), done: make(chan struct{}), pending: map[string]chan codexRPCMessage{}}
+	w := &capacityRetryWriter{t: t, rpc: r}
+	r.stdin = w
+	r.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"first","status":"failed","error":{"message":"busy","codexErrorInfo":"serverOverloaded"}}}`)}
+	_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(ctx, &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
+		if c.ProviderRetry != nil {
+			cancel()
+		}
+	})
+	if err != context.Canceled || w.starts != 0 {
+		t.Fatalf("cancelled retry starts=%d err=%v", w.starts, err)
+	}
+
 }

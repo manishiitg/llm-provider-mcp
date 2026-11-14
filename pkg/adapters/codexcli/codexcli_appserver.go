@@ -494,9 +494,15 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 		select {
 		case <-ctx.Done():
 			timer.Stop()
+			if c.logger != nil {
+				c.logger.Infof("[CODEX_RETRY] owner=%s thread=%s turn=%s action=skipped reason=cancelled", owner, thread, turn)
+			}
 			return nil, ctx.Err()
 		case <-r.done:
 			timer.Stop()
+			if c.logger != nil {
+				c.logger.Infof("[CODEX_RETRY] owner=%s thread=%s turn=%s action=failed reason=process_exited", owner, thread, turn)
+			}
 			return nil, r.failure()
 		case <-timer.C:
 		}
@@ -504,6 +510,7 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 		// input; never resend the person's original message or attachments.
 		retryParams := codexAppTurnParams(thread, "", opts)
 		retryParams["input"] = []map[string]any{}
+		started.Turn = codexAppTurn{}
 		if err := r.call(ctx, "turn/start", retryParams, &started); err != nil {
 			return nil, err
 		}
