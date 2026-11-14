@@ -3,7 +3,7 @@ package nativeevents
 import (
 	"encoding/xml"
 	"fmt"
-	"github.com/manishiitg/multi-llm-provider-go/internal/commandlabel"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/commandlabel"
 	"io"
 	"strconv"
 	"strings"
