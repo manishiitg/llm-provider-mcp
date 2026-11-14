@@ -148,6 +148,8 @@ async function main() {
     }
   }
   let run, wake, ended = false, keepWarm = false;
+  let nextPromptCapable = false, nextPromptTurn = '', settledPromptTurn = '';
+  let suggestionNearLimit = false;
   const helpers = createHelperTracker(emit, true);
   // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
   // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
@@ -192,10 +194,12 @@ async function main() {
         const request = JSON.parse(line);
         if (request.type === 'prompt') {
           keepWarm = request.keep_warm === true;
+          if (!run) nextPromptCapable = request.next_prompt_capable === true;
+          nextPromptTurn = request.next_prompt_turn || '';
           const uuid = randomUUID();
           strayCheck = parked && parkedTurnRunning;
           parked = false; turnActive = true; promptUUID = uuid; promptConsumed = !strayCheck;
-          input.push({ content: sdkUserContent(request), uuid }); wake?.(); resolve();
+          input.push({ content: sdkUserContent(request), uuid, nextPrompt: request.next_prompt === true, nextPromptTurn }); wake?.(); resolve();
         }
         else if (request.type === 'adopt') {
           keepWarm = request.keep_warm === true;
@@ -224,6 +228,7 @@ async function main() {
         else if (request.type === 'release') {
           // The host ended a turn held open after its answer. What still runs is no longer part of a turn; the
           // session stays only for Claude's own background tasks (keep), otherwise input ends.
+          settledPromptTurn = nextPromptTurn;
           turnActive = false; strayCheck = false; promptConsumed = true;
           if (request.keep && (keepWarm || ownRunning().length > 0)) parked = true; else finishInput();
         }
@@ -244,10 +249,20 @@ async function main() {
     lines.on('close', () => { finishInput(); cancelPermissions(); resolve(); });
   });
   await first;
+  // This SDK capability reuses the native turn cache. Dynamic flag settings
+  // gate each input without restarting a kept query or its background work.
+  options.promptSuggestions = nextPromptCapable;
   async function* messages() {
     while (!ended || input.length) {
       if (!input.length) { await new Promise(resolve => { wake = resolve; }); wake = undefined; continue; }
       const next = input.shift();
+      if (nextPromptCapable && next.nextPromptTurn) {
+        if (typeof run?.applyFlagSettings === 'function') {
+          await run.applyFlagSettings({ promptSuggestionEnabled: next.nextPrompt && !suggestionNearLimit });
+        } else {
+          emit({type:'sdk_prompt_skipped', sdk_prompt_turn:next.nextPromptTurn, prompt_skip_reason:'unsupported_sdk'});
+        }
+      }
       // Native human priority-now delivery lets movable tools step aside while
       // the running conversation takes the new direction (PLAT-872-47).
       const message = { type: 'user', message: { role: 'user', content: takeSDKContent(next) }, parent_tool_use_id: null,
@@ -264,6 +279,18 @@ async function main() {
   run = query({ prompt: messages(), options });
   try {
     for await (const event of run) {
+      if (event.type === 'rate_limit_event') {
+        const limit = event.rate_limit_info || {};
+        suggestionNearLimit = limit.status === 'rejected' || limit.utilization >= 0.9 || Object.values(limit.unifiedWindows || {}).some(window => window.utilization >= 0.9);
+        if (suggestionNearLimit && nextPromptCapable && typeof run.applyFlagSettings === 'function') {
+          await run.applyFlagSettings({ promptSuggestionEnabled:false });
+          emit({type:'sdk_prompt_skipped', sdk_prompt_turn:nextPromptTurn, prompt_skip_reason:'near_limit'});
+        }
+      }
+      if (event.type === 'prompt_suggestion') {
+        if (!turnActive && settledPromptTurn && !suggestionNearLimit) emit({...event, sdk_prompt_turn:settledPromptTurn});
+        continue;
+      }
       helpers.observe(event);
       // Keep work moved aside by steering alive until its native completion.
       // An empty roster can precede task_notification, so only that terminal

@@ -25,7 +25,10 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // assistant events (message.content text/tool_use blocks), then a terminal
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
-	SDKContinues bool `json:"sdk_continues,omitempty"`
+	Suggestion       string `json:"suggestion,omitempty"`
+	SDKPromptTurn    string `json:"sdk_prompt_turn,omitempty"`
+	PromptSkipReason string `json:"prompt_skip_reason,omitempty"`
+	SDKContinues     bool   `json:"sdk_continues,omitempty"`
 	// SDKParked: the result ends this turn but keeps its query, either warm or
 	// for Claude's own background work (PLAT-746-941).
 	SDKParked     bool                 `json:"sdk_parked,omitempty"`
@@ -456,7 +459,15 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			claudeSDKProcesses.Set(owner, sdkProcess)
 			defer claudeSDKProcesses.DeleteIf(owner, sdkProcess)
 		}
-		request := map[string]any{"type": "prompt", "text": prompt, "keep_warm": keepAllowed}
+		scope := llmtypes.NextPromptFor(ctx, "claude-code", owner)
+		sess.mu.Lock()
+		sess.nextPrompt = scope
+		sess.mu.Unlock()
+		if scope.Complete != nil && !scope.Eligible {
+			scope.Finish(llmtypes.NextPromptResult{Reason: "first_or_unattended_turn"})
+		}
+		request := map[string]any{"type": "prompt", "text": prompt, "keep_warm": keepAllowed,
+			"next_prompt_capable": scope.Complete != nil, "next_prompt": scope.Eligible, "next_prompt_turn": scope.TurnID}
 		if adoptWake {
 			request = map[string]any{"type": "adopt", "keep_warm": keepAllowed}
 		}
@@ -684,6 +695,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 					emitChunk(llmtypes.ContextCompactionChunk(c))
 				}
+			case "prompt_suggestion", "sdk_prompt_skipped":
+				if sess != nil {
+					sess.completeNextPrompt(ev)
+				}
 			case "rate_limit_event":
 				if liveUsage.observeRateLimit(ev.RateLimitInfo) {
 					emitLiveUsage(false)
@@ -811,6 +826,14 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				// guaranteed to be flushed. Let it exit naturally first; the
 				// signal sequence remains a backstop for a stuck CLI.
 				if !ev.SDKContinues {
+					if sess != nil {
+						sess.mu.Lock()
+						scope := sess.nextPrompt
+						sess.mu.Unlock()
+						if scope.Complete != nil {
+							time.AfterFunc(5*time.Second, func() { scope.Finish(llmtypes.NextPromptResult{Reason: "no_suggestion"}) })
+						}
+					}
 					if ev.SDKParked && sess != nil && !ev.IsError {
 						if keepAllowed {
 							// The answer ends the turn; the session stays for the running tasks.
