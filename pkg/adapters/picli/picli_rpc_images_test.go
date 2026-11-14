@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -153,6 +154,20 @@ func TestPiRPCImagesPromptSteerAndSafeEcho(t *testing.T) {
 	if err != nil || !bytes.Contains(next, []byte(`"data":"keep"`)) {
 		t.Fatal("ordinary command data was redacted", err)
 	}
+	// The native journal can contain the same large image, but durability still
+	// compares only text and timestamp; the old 16MiB scanner rejected it.
+	journal := filepath.Join(t.TempDir(), "native.jsonl")
+	row := strings.Replace(strings.Replace(raw[:strings.IndexByte(raw, '\n')], `"type":"message_end"`, `"type":"message"`, 1), `"role":"user"`, `"role":"user","timestamp":123`, 1)
+	if err = os.WriteFile(journal, []byte(row+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var echoed piRPCNativeMessage
+	if err = json.Unmarshal(record.Message, &echoed); err != nil {
+		t.Fatal(err)
+	}
+	if !piRPCUserPersisted(journal, piTranscriptText(piRPCParts(echoed.Content)), 123, 1) {
+		t.Fatal("large-image user record lost its durable receipt")
+	}
 	// Answered images never become pending again, even if later text exists.
 	imagePart := llmtypes.ImageContent{SourceType: "base64", MediaType: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("pixels"))}
 	history := []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{imagePart}}, llmtypes.TextPart(llmtypes.ChatMessageTypeAI, "answered"), llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "next")}
@@ -164,4 +179,55 @@ func TestPiRPCImagesPromptSteerAndSafeEcho(t *testing.T) {
 		t.Fatal("answered image started an empty native turn", err)
 	}
 
+}
+
+// A native image echo must neither make an invalid stream hang nor allocate
+// without bound. Failure closes the real RPC reader with a clear turn error.
+func TestPiRPCImagesMalformedAndOversizedFrameEndsTurn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input func() io.Reader
+	}{
+		{"malformed_string", func() io.Reader { return strings.NewReader("{\"message\":{\"content\":[{\"data\":\"bad\n") }},
+		{"unterminated_image", func() io.Reader { return strings.NewReader(`{"message":{"content":[{"data":"bad`) }},
+		{"malformed_json", func() io.Reader { return strings.NewReader("{]\n") }},
+		{"nesting_cap", func() io.Reader { return strings.NewReader(strings.Repeat("[", 129)) }},
+		{"non_image_cap", func() io.Reader {
+			return io.MultiReader(strings.NewReader(`{"text":"`), io.LimitReader(piRepeatedByte('A'), (16<<20)+1), strings.NewReader("\"}\n"))
+		}},
+		{"image_wire_cap", func() io.Reader {
+			return io.MultiReader(strings.NewReader(`{"message":{"content":[{"data":"`), io.LimitReader(piRepeatedByte('A'), 128<<20), strings.NewReader("\"}]}}\n"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rpc := &piRPC{nativeID: "bad-frame-test", stdin: &piImageFrameWriter{}, done: make(chan struct{}), events: make(chan piRPCRecord, 1), stop: func() {}}
+			returned := make(chan struct{})
+			go func() { defer close(returned); rpc.read(tc.input()) }()
+			select {
+			case <-returned:
+			case <-time.After(30 * time.Second):
+				t.Fatal("RPC reader hung on invalid input")
+			}
+			select {
+			case <-rpc.done:
+			default:
+				t.Fatal("invalid stream left the session live")
+			}
+			if rpc.failure() == nil || !strings.Contains(rpc.failure().Error(), "Pi RPC") {
+				t.Fatal("missing clear protocol error", rpc.failure())
+			}
+			if len(rpc.events) != 0 {
+				t.Fatal("invalid frame entered event queue")
+			}
+		})
+	}
+}
+
+type piRepeatedByte byte
+
+func (r piRepeatedByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
 }

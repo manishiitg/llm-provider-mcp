@@ -26,6 +26,9 @@ func readPiImageSafeFrame(r *bufio.Reader) ([]byte, error) {
 	for {
 		c, err := r.ReadByte()
 		if err != nil {
+			if err == io.EOF && inString {
+				return nil, errors.New("unterminated Pi RPC string")
+			}
 			if err == io.EOF && len(frame) > 0 && !inString {
 				return frame, nil
 			}

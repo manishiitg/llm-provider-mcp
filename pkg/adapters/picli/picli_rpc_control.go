@@ -106,22 +106,26 @@ func piRPCUserPersisted(file, text string, stamp int64, occurrence int) bool {
 		return false
 	}
 	defer f.Close()
-	scan := bufio.NewScanner(f)
-	scan.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	// A native user record may contain an 80MiB image turn. Verify only its
+	// text/timestamp without buffering image data or failing the old line cap.
+	reader := bufio.NewReaderSize(f, 64*1024)
 	found := 0
-	for scan.Scan() {
+	for {
+		raw, err := readPiImageSafeFrame(reader)
+		if err != nil {
+			return false
+		}
 		var row struct {
 			Type    string             `json:"type"`
 			Message piRPCNativeMessage `json:"message"`
 		}
-		if json.Unmarshal(scan.Bytes(), &row) == nil && row.Type == "message" && row.Message.Role == "user" && row.Message.Timestamp == stamp && piTranscriptText(piRPCParts(row.Message.Content)) == text {
+		if json.Unmarshal(raw, &row) == nil && row.Type == "message" && row.Message.Role == "user" && row.Message.Timestamp == stamp && piTranscriptText(piRPCParts(row.Message.Content)) == text {
 			found++
 			if found >= occurrence {
 				return true
 			}
 		}
 	}
-	return false
 }
 func interruptPiRPC(ctx context.Context, owner, key string) error {
 	if key != "Escape" && key != "Esc" && key != "C-c" && key != "Ctrl-C" {
