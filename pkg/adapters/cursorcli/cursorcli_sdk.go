@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -861,6 +862,12 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 				if c.logger != nil {
 					c.logger.Infof("[CURSOR_SDK] turn_end_settled agent=%s reason=%s detail=%s chars=%d", s.agentID, event.Action, event.Status, text.Len())
 				}
+			case "image_order":
+				reason := event.Status
+				if reason == "" {
+					reason = "receipt_order"
+				}
+				log.Printf("[CHAT_IMAGE] session=%s provider=cursor-cli steer=%s action=%s reason=%s", owner, event.ID, event.Action, reason)
 			case "steer_outcome":
 				// Whether the running run took a mid-turn message ("complete_delivered") or the bridge answers
 				// it as a follow-up in this turn (any other outcome).
