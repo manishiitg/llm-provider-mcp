@@ -16,7 +16,7 @@ func readPiImageSafeFrame(r *bufio.Reader) ([]byte, error) {
 	type frameLevel struct {
 		kind                  byte
 		key                   bool
-		field                 string
+		field, path           string
 		imageArray, imagePart bool
 	}
 	var stack []frameLevel
@@ -83,7 +83,19 @@ func readPiImageSafeFrame(r *bufio.Reader) ([]byte, error) {
 				level := frameLevel{kind: c, key: c == '{'}
 				if len(stack) > 0 {
 					top := stack[len(stack)-1]
-					level.imageArray = c == '[' && top.kind == '{' && (top.field == "content" || top.field == "images")
+					level.path = top.path
+					if top.kind == '[' {
+						level.path += "[]"
+					} else if top.path == "" {
+						level.path = top.field
+					} else {
+						level.path += "." + top.field
+					}
+					// Unknown/deep paths can never become native message paths.
+					if len(level.path) > 96 || top.path == "#" {
+						level.path = "#"
+					}
+					level.imageArray = c == '[' && piNativeImageArrayPath(level.path)
 					level.imagePart = c == '{' && top.kind == '[' && top.imageArray
 				}
 				if len(stack) >= 128 {
@@ -109,4 +121,15 @@ func readPiImageSafeFrame(r *bufio.Reader) ([]byte, error) {
 			return nil, errors.New("Pi RPC non-image frame exceeds 16 MiB")
 		}
 	}
+}
+
+// These are native message/content locations, not arbitrary content/images
+// keys inside a tool's arguments or result details (PR184 review regression).
+func piNativeImageArrayPath(path string) bool {
+	switch path {
+	case "message.content", "messages[].content", "assistantMessageEvent.partial.content",
+		"data.messages[].content", "result.content", "toolResults[].content":
+		return true
+	}
+	return false
 }
