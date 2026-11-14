@@ -201,6 +201,9 @@ func (p *cursorSDKProcess) fetchImages(event cursorSDKEvent) {
 	source := p.images[event.InputID]
 	if source == nil || source.busy || !p.imageActive {
 		p.mu.Unlock()
+		if source != nil {
+			p.imageNotice(event.InputID)
+		}
 		go p.send(map[string]any{"type": "image_frame", "id": event.ID})
 		return
 	}
@@ -225,6 +228,12 @@ func (p *cursorSDKProcess) fetchImages(event cursorSDKEvent) {
 		}
 		defer cleanup()
 		if ctx.Err() != nil {
+			for _, input := range source.inputs {
+				if input.Skipped != nil {
+					input.Skipped("image_fetch_timeout")
+				}
+			}
+			finishCursorImageDelivery(source.owner, params, ctx.Err(), "bridge_written")
 			params = base
 		}
 		err = p.send(params)
