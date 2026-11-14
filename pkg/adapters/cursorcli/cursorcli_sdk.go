@@ -533,6 +533,7 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 				lookup = fmt.Sprintf("%dms", *event.ModelLookupMS)
 			}
 			c.logger.Infof("[CURSOR_SDK] start agent=%s catalog=%s lookup=%s params=%q", event.AgentID, catalog, lookup, event.ModelParams)
+			c.logger.Infof("[CURSOR_BACKGROUND] owner=%s agent=%s action=skipped reason=detached_shell_wake_unavailable policy=foreground_wait", owner, event.AgentID)
 		}
 		return p, event.AgentID, event.Resumed, nil
 	case <-p.done:
@@ -597,6 +598,11 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 	if system == "" {
 		system = llmtypes.CodingProviderLaunchSystemPromptFromOptions(opts)
 	}
+	// PLAT-746-999: the SDK finishes the run without notifying us when a detached shell exits.
+	if system != "" {
+		system += "\n\n"
+	}
+	system += "For shell commands expected to finish within about 10 minutes, wait in the foreground until they finish; detached shell completion does not wake this chat."
 	model := cursorModelWithReasoning(cursorCLIModelForLaunch(c.modelID), opts)
 	if override := cursorMetaString(opts, MetadataKeyCursorModel); override != "" {
 		model = cursorModelWithReasoning(override, opts)
