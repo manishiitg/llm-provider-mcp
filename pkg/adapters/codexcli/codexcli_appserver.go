@@ -444,10 +444,16 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	goalCommand, hasGoalCommand := llmtypes.NativeGoalCommandForSession(ctx, owner)
 	activateGoal := false
 	if hasGoalCommand {
+		originalPrompt := prompt
 		var reply *llmtypes.ContentResponse
 		prompt, activateGoal, reply, err = c.prepareCodexGoalCommand(ctx, s, r, thread, goalCommand, emit)
 		if err != nil || reply != nil {
 			return reply, err
+		}
+		// Automatic restart/wake recovery must retain its safety notice and
+		// current input, rather than replacing it with only the objective.
+		if goalCommand.Action == "resume" && strings.TrimSpace(originalPrompt) != "" {
+			prompt += "\n\n" + originalPrompt
 		}
 	}
 	params := codexAppTurnParams(thread, prompt, opts)
