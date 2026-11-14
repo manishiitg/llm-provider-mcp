@@ -150,6 +150,7 @@ func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtype
 			if goal.Status == "active" {
 				goal, err = setCodexGoalStatus(ctx, s, r, thread, "paused", nil, reason)
 				if err != nil {
+					abandonCodexGoalWakePause(s, r, thread)
 					return nil, err
 				}
 			}
@@ -337,6 +338,7 @@ func startCodexGoalTurn(ctx context.Context, s *codexAppSession, r *codexRPC, th
 func pauseCodexGoalForTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, pause llmtypes.NativeGoalTurnPause, emit func(llmtypes.StreamChunk)) error {
 	goal, err := readCodexGoal(ctx, s, r, thread, nil)
 	if err != nil {
+		abandonCodexGoalWakePause(s, r, thread)
 		return err
 	}
 	s.mu.Lock()
@@ -345,8 +347,20 @@ func pauseCodexGoalForTurn(ctx context.Context, s *codexAppSession, r *codexRPC,
 
 	if goal != nil && (goal.Status == "active" || (goal.Status == "usage_limited" && pause.Reason == "background_wake")) {
 		_, err = setCodexGoalStatus(ctx, s, r, thread, "paused", emit, pause.Reason)
+		if err != nil {
+			abandonCodexGoalWakePause(s, r, thread)
+		}
 		return err
 	}
 	recordCodexGoal(s, goal, emit, "native_read")
 	return nil
+}
+
+// A failed pause must not retain a non-persistent native goal without a consumer.
+func abandonCodexGoalWakePause(s *codexAppSession, r *codexRPC, thread string) {
+	s.mu.Lock()
+	s.goalPausedForWake = false
+	s.mu.Unlock()
+	r.close()
+	log.Printf("[AGENT_GOAL] session=%s native=%s action=failed status=unknown reason=wake_pause_unconfirmed_process_closed", s.owner, thread)
 }
