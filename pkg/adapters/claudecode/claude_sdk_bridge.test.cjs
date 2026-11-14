@@ -252,3 +252,66 @@ export function query({ prompt }) {
   assert.ok(events.some(event => event.type === 'sdk_control_result' && event.id === 'image-steer' && !event.is_error));
   assert.ok(events.some(event => event.type === 'result' && event.result === 'Images received'));
 });
+
+test('PLAT-746-1000 a kept SDK prompt iterator releases delivered image blocks', { timeout: 8000 }, async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'sdk-image-retention-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  writeFileSync(join(folder, 'sdk.mjs'), `
+const tick = () => new Promise(resolve => setImmediate(resolve));
+export function query({ prompt }) {
+  let written = 0, firstID, secondID, imageRef;
+  const transport = { write(serialized) {
+    const message = JSON.parse(serialized);
+    if (++written === 1) {
+      if (message.message.content[1]?.source?.data?.length !== 1048576) throw new Error('image not written');
+      firstID = message.uuid;
+    } else {
+      if (message.message.content !== 'Second warm turn') throw new Error('warm text changed');
+      secondID = message.uuid;
+    }
+  } };
+  // Mirror installed Agent SDK 0.3.311 streamInput: serialize/write each
+  // yielded message, with no pending-message cache beyond that write.
+  const pump = (async () => {
+    for await (let message of prompt) {
+      if (!imageRef) imageRef = new WeakRef(message.message.content[1]);
+      await Promise.resolve(transport.write(JSON.stringify(message) + '\n'));
+    }
+  })();
+  const iterator = (async function* () {
+    while (written < 1) await tick();
+    yield { type: 'user', uuid: firstID };
+    yield { type: 'result', result: 'First image delivered', user_message_uuids: [firstID] };
+    // Resume the input iterator and collect while the same native session is
+    // parked, BEFORE a second prompt can overwrite its previous message.
+    for (let i = 0; i < 8; i++) { await tick(); global.gc(); }
+    await tick();
+    if (imageRef.deref() !== undefined) throw new Error('delivered image retained while parked');
+    yield { type: 'system', subtype: 'image_release_checked' };
+    while (written < 2) await tick();
+    yield { type: 'result', result: 'Second warm turn finished', user_message_uuids: [secondID] };
+  })();
+  iterator.close = () => {};
+  return iterator;
+}`);
+  const child = spawn(process.execPath, ['--expose-gc', join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AGENTWORKS_CLI_LAUNCH: '' } });
+  t.after(() => child.kill());
+  let pending = '', stderr = '', released = false, finishedWarm = false;
+  child.stderr.on('data', data => stderr += data);
+  child.stdout.on('data', data => {
+    pending += data;
+    while (pending.includes('\n')) {
+      const end = pending.indexOf('\n'), event = JSON.parse(pending.slice(0, end)); pending = pending.slice(end + 1);
+      if (event.type === 'system' && event.subtype === 'image_release_checked') {
+        released = true;
+        child.stdin.write(JSON.stringify({ type: 'prompt', keep_warm: true, text: 'Second warm turn' }) + '\n');
+      }
+      if (event.type === 'result' && event.result === 'Second warm turn finished') finishedWarm = true;
+    }
+  });
+  const finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
+  child.stdin.write(JSON.stringify({ type: 'prompt', keep_warm: true, text: 'Inspect the image', images: [{ mediaType: 'image/png', data: 'A'.repeat(1048576) }] }) + '\n');
+  await finished;
+  assert.equal(released, true, 'image blocks were not released before the next warm prompt');
+  assert.equal(finishedWarm, true, 'the same kept session failed its next turn');
+});

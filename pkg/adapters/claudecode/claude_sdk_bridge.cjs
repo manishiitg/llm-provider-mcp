@@ -250,8 +250,15 @@ async function main() {
       const next = input.shift();
       // Native human priority-now delivery lets movable tools step aside while
       // the running conversation takes the new direction (PLAT-872-47).
-      yield { type: 'user', message: { role: 'user', content: takeSDKContent(next) }, parent_tool_use_id: null,
+      const message = { type: 'user', message: { role: 'user', content: takeSDKContent(next) }, parent_tool_use_id: null,
         uuid: next.uuid, priority: next.priority, origin: { kind: 'human' } };
+      try { yield message; }
+      finally {
+        // Agent SDK streamInput writes the message before requesting next().
+        // Once resumed, drop our image blocks even if its loop retains the
+        // last yielded envelope while waiting in a kept session. Text stays.
+        if (Array.isArray(message.message.content)) message.message.content = message.message.content.filter(block => block.type !== 'image');
+      }
     }
   }
   run = query({ prompt: messages(), options });
