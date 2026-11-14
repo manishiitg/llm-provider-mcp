@@ -471,6 +471,18 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 		response, turnErr := c.consumeAppTurn(ctx, s, r, thread, turn, emit)
 		var nativeErr *CodexTurnError
 		if !errors.As(turnErr, &nativeErr) || !nativeErr.Capacity() || attempt >= 5 {
+			if attempt > 0 && c.logger != nil {
+				outcome := "done"
+				reason := "completed"
+				if turnErr != nil {
+					outcome = "failed"
+					reason = "turn_error"
+				}
+				if nativeErr != nil && nativeErr.Capacity() && attempt >= 5 {
+					reason = "retry_limit"
+				}
+				c.logger.Infof("[CODEX_RETRY] owner=%s thread=%s turn=%s attempts=%d action=%s reason=%s", owner, thread, turn, attempt, outcome, reason)
+			}
 			return response, turnErr
 		}
 		delay := codexCapacityRetryWait(attempt)
