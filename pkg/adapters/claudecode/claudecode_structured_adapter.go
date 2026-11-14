@@ -504,6 +504,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				effort = level
 			}
 		}
+		// Host CallOptions supply the current mode; never derive it from prompt/tool output.
 		request["runtime_settings"] = map[string]any{"model": c.modelID, "permission_mode": permissionMode, "effort": effort}
 		if adoptWake {
 			request = map[string]any{"type": "adopt", "keep_warm": keepAllowed}

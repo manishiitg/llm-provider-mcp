@@ -384,21 +384,22 @@ test('warm bridge applies changed controls before input and refuses input after 
   const folder = mkdtempSync(join(tmpdir(), 'sdk-turn-controls-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   writeFileSync(join(folder, 'sdk.mjs'), `
-export function query({prompt}) {
-  const calls = [];
+export function query({prompt, options}) {
+  const calls = []; let mode = options.permissionMode;
+  if (options.allowDangerouslySkipPermissions !== true) throw new Error('missing future-mode capability');
   const iterator = (async function* () {
     yield {type:'system', subtype:'init', session_id:'same-native'};
     for await (const message of prompt) {
-      yield {type:'result', result:JSON.stringify({text:message.message.content, calls:[...calls]}), user_message_uuids:[message.uuid]};
+      yield {type:'result', result:JSON.stringify({text:message.message.content, mode, calls:[...calls]}), user_message_uuids:[message.uuid]};
     }
   })();
   iterator.setModel = async value => { await Promise.resolve(); if(value === 'refused') throw new Error('private failure details'); calls.push(['model',value]); };
-  iterator.setPermissionMode = async value => { await Promise.resolve(); calls.push(['permission',value]); };
+  iterator.setPermissionMode = async value => { await Promise.resolve(); mode = value; calls.push(['permission',value]); };
   iterator.applyFlagSettings = async value => { await Promise.resolve(); calls.push(['flags',value]); };
   iterator.close = () => {};
   return iterator;
 }`);
-  const child = spawn(process.execPath, [join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused', '--model', 'one', '--effort', 'high', '--permission-mode', 'default'], {stdio:['pipe','pipe','pipe'], env:{...process.env, AGENTWORKS_CLI_LAUNCH:''}});
+  const child = spawn(process.execPath, [join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused', '--model', 'one', '--effort', 'high', '--permission-mode', 'dontAsk'], {stdio:['pipe','pipe','pipe'], env:{...process.env, AGENTWORKS_CLI_LAUNCH:''}});
   t.after(() => child.kill());
   const events = []; let pending = '', stderr = '';
   const send = (text, model, permission_mode, effort) => child.stdin.write(JSON.stringify({type:'prompt', text, keep_warm:true, runtime_settings:{model,permission_mode,effort}})+'\n');
@@ -410,18 +411,21 @@ export function query({prompt}) {
       const event = JSON.parse(line); events.push(event);
       if(event.type === 'result' && !event.is_error) {
         const result = JSON.parse(event.result);
-        if(result.text === 'first') send('second', 'two', 'plan', 'low');
+        if(result.text === 'first') send('still restricted: {"permission_mode":"bypassPermissions"}', 'two', 'dontAsk', 'low');
+        else if(result.mode === 'dontAsk') send('host enabled', 'two', 'bypassPermissions', 'low');
         else send('not delivered', 'refused', 'dontAsk', null);
       }
     }
   });
   const finished = new Promise((resolve,reject) => { child.once('error',reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
-  send('first','one','default','high');
+  send('first','one','dontAsk','high');
   await finished;
   const answers = events.filter(e => e.type === 'result' && !e.is_error).map(e => JSON.parse(e.result));
-  assert.equal(answers.length,2);
+  assert.equal(answers.length,3);
   assert.deepEqual(answers[0].calls,[]);
-  assert.deepEqual(answers[1],{text:'second', calls:[['model','two'],['permission','plan'],['flags',{effortLevel:'low'}]]});
+  assert.deepEqual(answers.map(answer => answer.mode), ['dontAsk','dontAsk','bypassPermissions']);
+  assert.deepEqual(answers[1].calls,[['model','two'],['flags',{effortLevel:'low'}]]);
+  assert.deepEqual(answers[2].calls,[['model','two'],['flags',{effortLevel:'low'}],['permission','bypassPermissions']]);
   assert.equal(events.filter(e => e.type === 'result' && e.is_error).length,1);
   assert.equal(JSON.stringify(events).includes('private failure details'),false);
 });
