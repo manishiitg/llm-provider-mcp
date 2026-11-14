@@ -138,7 +138,6 @@ type StatusLineProvider interface {
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
-	ProviderRetry   *ProviderRetry    // Native provider retry progress, never a new user turn.
 	NativeRetry     *NativeRetry      // Status of the native CLI’s own retry loop.
 	NativeGoal      *NativeGoalUpdate // Private goal state, never a token/account status snapshot.
 	CodingAgentPlan *CodingAgentPlan  // Full provider-authored checklist snapshot.

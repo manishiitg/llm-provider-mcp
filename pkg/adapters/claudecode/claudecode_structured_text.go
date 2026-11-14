@@ -11,11 +11,12 @@ import (
 // tools. Preserve that explicit boundary in both live text and the saved turn;
 // punctuation cannot distinguish a message boundary from a split token.
 type claudeStructuredText struct {
-	partial   bool
-	emitted   bool
-	completed strings.Builder
-	messageID string
-	blocks    map[string]*claudeTextBlock
+	nativeRetry *llmtypes.NativeRetry
+	partial     bool
+	emitted     bool
+	completed   strings.Builder
+	messageID   string
+	blocks      map[string]*claudeTextBlock
 }
 
 type claudeTextBlock struct {
@@ -58,6 +59,16 @@ func (t *claudeStructuredText) endBlock(id, text string, emit func(llmtypes.Stre
 }
 
 func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.StreamChunk)) {
+	if ev.ParentToolUseID == "" {
+		if ev.Type == "system" && ev.Subtype == "api_retry" && ev.Attempt > 0 {
+			t.endNativeRetry(false, emit)
+			t.nativeRetry = &llmtypes.NativeRetry{Provider: "claude-code", NativeSessionID: ev.SessionID, Phase: "start", Attempt: ev.Attempt, MaxAttempts: ev.MaxRetries, DelayMS: ev.RetryDelayMS}
+			emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: t.nativeRetry})
+		} else if ev.Type == "assistant" || ev.Type == "result" || ev.Type == "stream_event" {
+			t.endNativeRetry(!ev.IsError, emit)
+		}
+	}
+
 	switch ev.Type {
 	case "stream_event":
 		if ev.Event == nil {
@@ -129,4 +140,15 @@ func (t *claudeStructuredText) observe(ev claudeStreamEvent, emit func(llmtypes.
 			}
 		}
 	}
+}
+
+func (t *claudeStructuredText) endNativeRetry(success bool, emit func(llmtypes.StreamChunk)) {
+	if t.nativeRetry == nil {
+		return
+	}
+	end := *t.nativeRetry
+	end.Phase = "end"
+	end.Success = success
+	t.nativeRetry = nil
+	emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: &end})
 }
