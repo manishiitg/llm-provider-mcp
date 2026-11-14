@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,7 @@ func TestPiRPCImagesPromptSteerAndSafeEcho(t *testing.T) {
 	if piHasPendingImages(ctx, owner, history) {
 		t.Fatal("answered image counted as new input")
 	}
+	t.Setenv(EnvPiBinary, filepath.Join(t.TempDir(), "must-not-launch"))
 	if _, err = NewPiCLIAdapter("", "google/test", nil).GenerateContent(ctx, history[:2]); err == nil || !strings.Contains(err.Error(), "prompt is empty") {
 		t.Fatal("answered image started an empty native turn", err)
 	}
