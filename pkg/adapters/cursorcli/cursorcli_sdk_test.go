@@ -467,11 +467,12 @@ func TestCursorSDKTurnEndedRunThatStaysOpenFinishesWithTheAnswer(t *testing.T) {
 		updates, ending, status string
 		settle                  bool
 	}{
-		"run stays open":                      {ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled', result:''}); })`, status: "finished", settle: true},
-		"no progress error":                   {ending: `({status:'error', error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`, status: "finished", settle: true},
-		"live shell survives quiet window":    {updates: `opts.onDelta({update:{type:'tool-call-started',callId:'shell',toolCall:{type:'shell'}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>r({status:'finished',result:'background finished'}),500); })`, status: "finished"},
-		"detached task survives quiet window": {updates: `opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:true}}}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>r({status:'finished',result:'background finished'}),500); })`, status: "finished"},
-		"native task failure is not hidden":   {updates: `opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:true}}}}});`, ending: `({status:'error',error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`, status: "error"},
+		"run stays open":                               {ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled', result:''}); })`, status: "finished", settle: true},
+		"no progress error":                            {ending: `({status:'error', error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`, status: "finished", settle: true},
+		"live shell survives quiet window":             {updates: `opts.onDelta({update:{type:'tool-call-started',callId:'shell',toolCall:{type:'shell'}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>r({status:'finished',result:'background finished'}),500); })`, status: "finished"},
+		"detached task survives quiet window":          {updates: `opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:true}}}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>r({status:'finished',result:'background finished'}),500); })`, status: "finished"},
+		"finished foreground task becomes quiet again": {updates: `opts.onDelta({update:{type:'tool-call-started',callId:'task',toolCall:{type:'task'}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:false}}}}}),300); })`, status: "finished", settle: true},
+		"native task failure is not hidden":            {updates: `opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:true}}}}});`, ending: `({status:'error',error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`, status: "error"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
