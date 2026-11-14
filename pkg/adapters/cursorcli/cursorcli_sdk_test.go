@@ -463,9 +463,15 @@ func TestCursorSDKTurnEndedRunThatStaysOpenFinishesWithTheAnswer(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node not installed")
 	}
-	for name, ending := range map[string]string{
-		"run stays open":    `await new Promise(r => { cancelRun = () => r({status:'cancelled', result:''}); })`,
-		"no progress error": `({status:'error', error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`,
+	for name, scenario := range map[string]struct {
+		updates, ending, status string
+		settle                  bool
+	}{
+		"run stays open":                      {ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled', result:''}); })`, status: "finished", settle: true},
+		"no progress error":                   {ending: `({status:'error', error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`, status: "finished", settle: true},
+		"live shell survives quiet window":    {updates: `opts.onDelta({update:{type:'tool-call-started',callId:'shell',toolCall:{type:'shell'}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>r({status:'finished',result:'background finished'}),500); })`, status: "finished"},
+		"detached task survives quiet window": {updates: `opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:true}}}}});`, ending: `await new Promise(r => { cancelRun = () => r({status:'cancelled'}); setTimeout(()=>r({status:'finished',result:'background finished'}),500); })`, status: "finished"},
+		"native task failure is not hidden":   {updates: `opts.onDelta({update:{type:'tool-call-completed',callId:'task',toolCall:{type:'task',result:{status:'success',value:{isBackground:true}}}}});`, ending: `({status:'error',error:{message:'Agent turn stopped after repeated resume attempts made no progress'}})`, status: "error"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -474,8 +480,8 @@ func TestCursorSDKTurnEndedRunThatStaysOpenFinishesWithTheAnswer(t *testing.T) {
 let cancelRun = () => {};
 exports.Cursor={auth:{status:async()=>({status:'logged-in'})},models:{list:async()=>[]}};
 exports.Agent={create:async()=>({agentId:'a1', send:async(text, opts)=>({
-  async *stream(){ opts.onDelta({update:{type:'text-delta', text:'the answer'}}); opts.onDelta({update:{type:'turn-ended'}}); },
-  wait: async()=>` + ending + `,
+  async *stream(){ ` + scenario.updates + ` opts.onDelta({update:{type:'text-delta', text:'the answer'}}); opts.onDelta({update:{type:'turn-ended'}}); },
+  wait: async()=>` + scenario.ending + `,
   cancel: async()=>cancelRun(),
 })})};`
 			for name, data := range map[string][]byte{bridge: cursorSDKBridge, entry: []byte(sdk)} {
@@ -503,7 +509,7 @@ exports.Agent={create:async()=>({agentId:'a1', send:async(text, opts)=>({
 			if ctx.Err() != nil {
 				t.Fatalf("the turn did not finish: %s", out.String())
 			}
-			if !strings.Contains(out.String(), `"type":"result","status":"finished"`) || !strings.Contains(out.String(), `"type":"turn_end_settled"`) {
+			if !strings.Contains(out.String(), `"type":"result","status":"`+scenario.status+`"`) || strings.Contains(out.String(), `"type":"turn_end_settled"`) != scenario.settle {
 				t.Fatalf("turn did not finish with its answer: %s", out.String())
 			}
 		})

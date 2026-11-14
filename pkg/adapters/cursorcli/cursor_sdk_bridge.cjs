@@ -181,25 +181,45 @@ async function main() {
         // cancelled and the turn finishes. A run that ends with the SDK's own "no progress" error after
         // the turn ended has finished too.
         let turnEnded = false, quietEnded = false, quiet, giveUp;
+        const outstandingWork = new Set(), detachedWork = new Set();
+        const hasWork = () => outstandingWork.size > 0 || detachedWork.size > 0;
         const stopQuiet = () => { clearTimeout(quiet); quiet = undefined; };
         const quietMs = start.turn_end_quiet_ms ?? 30000;
         const gaveUp = new Promise(resolve => { giveUp = resolve; });
+        const armQuiet = () => {
+          stopQuiet();
+          if (!turnEnded || hasWork()) return;
+          quiet = setTimeout(() => {
+            if (!turnEnded || hasWork()) return;
+            quietEnded = true;
+            emit({ type: 'turn_end_settled', action: 'quiet', status: String(quietMs) });
+            run?.cancel().catch(() => {});
+            // A cancel the SDK never answers must not hold a truly idle turn.
+            setTimeout(() => giveUp({ status: 'finished', result: '' }), 10000);
+          }, quietMs);
+        };
         const sendOptions = {
           // Reassert the selected variant on every turn, including resumed/follow-up runs.
           model: start.model,
           onDelta: ({ update }) => {
+            // The SDK exposes call lifetimes, not a separate background roster.
+            // A detached task remains known work until the native run finishes.
+            if (update.type === 'tool-call-started' && ['shell', 'task'].includes(update.toolCall?.type)) {
+              outstandingWork.add(update.callId);
+              stopQuiet();
+            } else if (update.type === 'tool-call-delta') {
+              outstandingWork.add(update.callId);
+              stopQuiet();
+            } else if (update.type === 'tool-call-completed' && ['shell', 'task'].includes(update.toolCall?.type)) {
+              outstandingWork.delete(update.callId);
+              if (update.toolCall.type === 'task' && update.toolCall.result?.status === 'success' && update.toolCall.result.value?.isBackground === true) detachedWork.add(update.callId);
+              else detachedWork.delete(update.callId);
+              armQuiet();
+            }
             if (update.type === 'turn-ended') {
               turnEnded = true;
               emit({ type: 'turn_ended' });
-              stopQuiet();
-              quiet = setTimeout(() => {
-                if (!turnEnded) return;
-                quietEnded = true;
-                emit({ type: 'turn_end_settled', action: 'quiet', status: String(quietMs) });
-                run?.cancel().catch(() => {});
-                // A cancel the SDK never answers must not hold the turn either.
-                setTimeout(() => giveUp({ status: 'finished', result: '' }), 10000);
-              }, quietMs);
+              armQuiet();
             } else if (['step-started', 'user-message-appended', 'text-delta', 'thinking-delta', 'partial-tool-call', 'tool-call-started'].includes(update.type)) {
               turnEnded = false;
               stopQuiet();
@@ -224,7 +244,7 @@ async function main() {
           return current.wait();
         })(), gaveUp]);
         stopQuiet();
-        if (turnEnded && last.status !== 'finished' && (quietEnded || /repeated resume attempts made no progress/i.test(short(last.error)))) {
+        if (turnEnded && !hasWork() && last.status !== 'finished' && (quietEnded || /repeated resume attempts made no progress/i.test(short(last.error)))) {
           if (!quietEnded) emit({ type: 'turn_end_settled', action: 'no_progress', status: last.status });
           last = { ...last, status: 'finished', error: undefined };
         }
