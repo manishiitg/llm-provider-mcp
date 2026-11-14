@@ -707,6 +707,18 @@ func SendCodexAppServerInput(ctx context.Context, owner, message string) error {
 	}
 	defer closeImages()
 	s.mu.Lock()
+	r, thread, turn = s.rpc, s.threadID, s.turnID
+	if r == nil || turn == "" {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: native turn ended during image preparation", llmtypes.ErrCodingAgentInputNotSent)
+	}
+	switch p := params.(type) {
+	case map[string]any:
+		p["threadId"], p["expectedTurnId"] = thread, turn
+	case *codexImageParams:
+		p.base["threadId"], p.base["expectedTurnId"] = thread, turn
+	}
+
 	receipt := &codexAppReceipt{id: codexRandomHex(16), text: message, accepted: time.Now(), durable: make(chan struct{})}
 	s.receipts = append(s.receipts, receipt)
 	if s.steers == nil {

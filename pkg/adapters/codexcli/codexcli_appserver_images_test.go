@@ -81,7 +81,16 @@ func TestCodexNativeImagesPromptSteerAndRefusedDelivery(t *testing.T) {
 	codexAppSessions.sessions[owner] = session
 	codexAppSessions.Unlock()
 	defer func() { codexAppSessions.Lock(); delete(codexAppSessions.sessions, owner); codexAppSessions.Unlock() }()
-	if err = SendCodexAppServerInput(ctx, owner, "A follow-up"); err != nil {
+	retryParams, retryClose, retryErr := codexParamsWithImages(ctx, owner, codexAppTurnParams("thread", "retry", &llmtypes.CallOptions{}), nil)
+	retryClose()
+	if retryErr != nil {
+		t.Fatal(retryErr)
+	}
+	if _, ok := retryParams.(*codexImageParams); ok {
+		t.Fatal("images replayed on a model retry")
+	}
+	steerCtx := llmtypes.WithNativeImageInputs(baseCtx, owner, []llmtypes.NativeImageInput{input})
+	if err = SendCodexAppServerInput(steerCtx, owner, "A follow-up"); err != nil {
 		t.Fatal(err)
 	}
 	if closed != 2 || opened != 2 {
@@ -126,11 +135,11 @@ func TestCodexNativeImagesPromptSteerAndRefusedDelivery(t *testing.T) {
 	bad := llmtypes.WithNativeImageInputs(ctx, owner, []llmtypes.NativeImageInput{input, {Open: func(context.Context) (io.ReadCloser, string, int64, error) {
 		return nil, "", 0, errors.New("access revoked")
 	}}})
-	if err = SendCodexAppServerInput(bad, owner, "Refused attachment"); err == nil {
-		t.Fatal("revoked attachment admitted")
+	if err = SendCodexAppServerInput(bad, owner, "Text survives a bad attachment"); err != nil {
+		t.Fatal(err)
 	}
-	if len(wire.frames) != 2 || wire.Len() != 0 || closed != 3 || len(session.receipts) != 1 {
-		t.Fatal("refused delivery wrote bytes, leaked resource or recorded a receipt")
+	if len(wire.frames) != 3 || wire.Len() != 0 || closed != 3 || len(session.receipts) != 2 {
+		t.Fatal("bad image swallowed text or leaked a resource")
 	}
 }
 
