@@ -300,7 +300,7 @@ func codexGoalActive(s *codexAppSession) bool {
 
 // Startup can fail after the native goal accepted activation. Cleanup cannot
 // use the canceled caller context, and a failed cleanup must end the process.
-func startCodexGoalTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, params map[string]any, activate bool, emit func(llmtypes.StreamChunk)) (string, error) {
+func startCodexGoalTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, params any, activate bool, emit func(llmtypes.StreamChunk)) (string, error) {
 	startedOK := false
 	defer func() {
 		if activate && !startedOK {

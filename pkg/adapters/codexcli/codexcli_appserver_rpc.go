@@ -62,6 +62,42 @@ func (r *codexRPC) write(v any) error {
 	return json.NewEncoder(r.stdin).Encode(v)
 }
 
+// Only image requests use the streaming path; small ordinary RPCs are unchanged.
+func (r *codexRPC) writeRequest(id, method string, params any) error {
+	p, ok := params.(codexStreamingParams)
+	if !ok {
+		return r.write(map[string]any{"id": id, "method": method, "params": params})
+	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
+	err := func() error {
+		if _, err := io.WriteString(r.stdin, `{"id":`); err != nil {
+			return err
+		}
+		if err := writeCodexJSON(r.stdin, id); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(r.stdin, `,"method":`); err != nil {
+			return err
+		}
+		if err := writeCodexJSON(r.stdin, method); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(r.stdin, `,"params":`); err != nil {
+			return err
+		}
+		if err := p.writeJSON(r.stdin); err != nil {
+			return err
+		}
+		_, err := io.WriteString(r.stdin, "}\n")
+		return err
+	}()
+	if err != nil {
+		r.finish(fmt.Errorf("codex image request write failed"))
+	}
+	return err
+}
+
 func (r *codexRPC) call(ctx context.Context, method string, params any, result any) error {
 	id := fmt.Sprintf("aw-%d", r.next.Add(1))
 	key, _ := json.Marshal(id)
@@ -70,7 +106,7 @@ func (r *codexRPC) call(ctx context.Context, method string, params any, result a
 	r.pending[string(key)] = ch
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.pending, string(key)); r.mu.Unlock() }()
-	if err := r.write(map[string]any{"id": id, "method": method, "params": params}); err != nil {
+	if err := r.writeRequest(id, method, params); err != nil {
 		return fmt.Errorf("codex app-server %s: %w", method, err)
 	}
 	select {

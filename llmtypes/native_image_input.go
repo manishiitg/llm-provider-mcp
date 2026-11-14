@@ -8,8 +8,8 @@ import (
 // NativeImageInput is a delivery-local capability installed by the host after
 // admitting an attachment. Open rechecks access and prepares one image. It is
 // not a caller-supplied path, a saved message part or a base64 history field.
-// The reader's Close releases its prepared file/buffers. Consumers must close
-// each image before opening the next, and discard encoded input after its RPC.
+// The reader's Close releases its prepared file/buffers. Preparation must decode one image at a time; prepared file readers may coexist
+// until the single RPC. Close all readers immediately after that RPC.
 type NativeImageInput struct {
 	ID   string
 	Open func(context.Context) (reader io.ReadCloser, mediaType string, bytes int64, err error)

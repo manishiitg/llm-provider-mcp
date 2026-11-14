@@ -69,17 +69,6 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, err
 	}
 
-	// Defensive backstop for direct adapter callers that bypass the
-	// orchestrator's image-content pre-processing. The app funnels CLI image
-	// input as a TEXT message containing the absolute workspace path; the model
-	// then uses its filesystem-read capability to inspect it.
-	if len(collectCodexImageContent(messages)) > 0 {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-		return nil, fmt.Errorf("codex-cli app-server adapter does not support llmtypes.ImageContent directly; pass the image file path as text instead")
-	}
-
 	tmux := c.tmuxTransport
 	switch opts.CodingProviderTransport {
 	case "":
@@ -91,6 +80,12 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("unsupported Codex native transport %q", opts.CodingProviderTransport)
 	}
 	if tmux {
+		if len(collectCodexImageContent(messages)) > 0 || len(llmtypes.NativeImageInputsForSession(ctx, codexInteractiveSessionIDFromOptions(opts))) > 0 {
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, fmt.Errorf("Codex native images are unavailable in terminal transport; use the file path")
+		}
 		owner := codexInteractiveSessionIDFromOptions(opts)
 		_, goalCommand := llmtypes.NativeGoalCommandForSession(ctx, owner)
 		_, goalPause := llmtypes.NativeGoalTurnPauseForSession(ctx, owner)

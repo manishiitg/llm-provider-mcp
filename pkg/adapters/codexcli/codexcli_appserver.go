@@ -254,7 +254,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	prompt := buildCodexInteractivePrompt(conversation)
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
-	if prompt == "" && !launchOnly && !idleCompact {
+	if prompt == "" && !launchOnly && !idleCompact && len(collectCodexImageContent(messages)) == 0 && len(llmtypes.NativeImageInputsForSession(ctx, codexInteractiveSessionIDFromOptions(opts))) == 0 {
 		return nil, fmt.Errorf("codex-cli prompt is empty")
 	}
 	resume, err := codexValidatedResumeSessionIDFromOptions(opts)
@@ -529,8 +529,13 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 			prompt += "\n\n" + originalPrompt
 		}
 	}
-	params := codexAppTurnParams(thread, prompt, opts)
+	params, closeImages, err := codexParamsWithImages(ctx, owner, codexAppTurnParams(thread, prompt, opts), messages)
+	if err != nil {
+		return nil, err
+	}
 	turn, err := startCodexGoalTurn(ctx, s, r, thread, params, activateGoal, emit)
+	finishCodexImageDelivery(owner, params, err)
+	closeImages()
 	if err != nil {
 		return nil, err
 	}
@@ -688,6 +693,13 @@ func SendCodexAppServerInput(ctx context.Context, owner, message string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: no active Codex turn; start the next turn through GenerateContent", llmtypes.ErrCodingAgentInputNotSent)
 	}
+	s.mu.Unlock()
+	params, closeImages, err := codexParamsWithImages(ctx, owner, map[string]any{"threadId": thread, "expectedTurnId": turn, "input": codexAppTextInput(message)}, nil)
+	if err != nil {
+		return err
+	}
+	defer closeImages()
+	s.mu.Lock()
 	receipt := &codexAppReceipt{id: codexRandomHex(16), text: message, accepted: time.Now(), durable: make(chan struct{})}
 	s.receipts = append(s.receipts, receipt)
 	if s.steers == nil {
@@ -695,7 +707,14 @@ func SendCodexAppServerInput(ctx context.Context, owner, message string) error {
 	}
 	s.steers[receipt.id] = message
 	s.mu.Unlock()
-	err := r.call(ctx, "turn/steer", map[string]any{"threadId": thread, "expectedTurnId": turn, "input": codexAppTextInput(message), "clientUserMessageId": receipt.id}, nil)
+	switch p := params.(type) {
+	case map[string]any:
+		p["clientUserMessageId"] = receipt.id
+	case *codexImageParams:
+		p.base["clientUserMessageId"] = receipt.id
+	}
+	err = r.call(ctx, "turn/steer", params, nil)
+	finishCodexImageDelivery(owner, params, err)
 	if err != nil {
 		s.mu.Lock()
 		delete(s.steers, receipt.id)
