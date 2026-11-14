@@ -112,7 +112,7 @@ func setCodexGoalStatus(ctx context.Context, s *codexAppSession, r *codexRPC, th
 
 // Controls use the already-owned process/thread only; they never create a new
 // session or submit an unvalidated objective as an ordinary model message.
-func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtypes.NativeGoal, error) {
+func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtypes.NativeGoalUpdate, error) {
 	s := codexAppSessionForOwner(owner)
 	if s == nil {
 		return nil, llmtypes.NativeGoalUnavailable("this Codex session")
@@ -125,25 +125,32 @@ func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtype
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	goal, err := readCodexGoal(ctx, s, r, thread, nil)
-	if err != nil || action == "show" || goal == nil {
-		return goal, err
-	}
-	switch action {
-	case "pause":
-		return setCodexGoalStatus(ctx, s, r, thread, "paused", nil, "person_pause")
-	case "clear":
-		if err := r.call(ctx, "thread/goal/clear", map[string]any{"threadId": thread}, nil); err != nil {
-			return nil, fmt.Errorf("Codex could not clear the native goal")
+	goal, err := func() (*llmtypes.NativeGoal, error) {
+		goal, err := readCodexGoal(ctx, s, r, thread, nil)
+		if err != nil || action == "show" || goal == nil {
+			return goal, err
 		}
-		s.mu.Lock()
-		s.goalActivationPending = false
-		s.mu.Unlock()
-		recordCodexGoal(s, nil, nil, "person_clear")
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("unsupported native goal control")
+		switch action {
+		case "pause":
+			return setCodexGoalStatus(ctx, s, r, thread, "paused", nil, "person_pause")
+		case "clear":
+			if err := r.call(ctx, "thread/goal/clear", map[string]any{"threadId": thread}, nil); err != nil {
+				return nil, fmt.Errorf("Codex could not clear the native goal")
+			}
+			s.mu.Lock()
+			s.goalActivationPending = false
+			s.mu.Unlock()
+			recordCodexGoal(s, nil, nil, "person_clear")
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unsupported native goal control")
+		}
+
+	}()
+	if err != nil {
+		return nil, err
 	}
+	return &llmtypes.NativeGoalUpdate{Provider: "codex-cli", NativeSessionID: thread, Goal: goal, Reason: "person_" + action}, nil
 }
 
 func (c *CodexCLIAdapter) prepareCodexGoalCommand(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, command llmtypes.NativeGoalCommand, emit func(llmtypes.StreamChunk)) (string, bool, *llmtypes.ContentResponse, error) {
@@ -175,6 +182,10 @@ func (c *CodexCLIAdapter) prepareCodexGoalCommand(ctx context.Context, s *codexA
 	case "resume":
 		if current == nil {
 			return "", false, nil, fmt.Errorf("No goal is set")
+		}
+		if objective != "" && (current.Objective != objective || current.Status != "paused") {
+			log.Printf("[AGENT_GOAL] session=%s native=%s action=skipped status=%s reason=restore_target_changed", s.owner, thread, current.Status)
+			return "", false, nil, fmt.Errorf("The goal changed; automatic restoration was canceled")
 		}
 		objective = current.Objective
 	case "set":
@@ -297,4 +308,17 @@ func startCodexGoalTurn(ctx context.Context, s *codexAppSession, r *codexRPC, th
 	}
 	startedOK = true
 	return turn, nil
+}
+
+func pauseCodexGoalForTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, pause llmtypes.NativeGoalTurnPause, emit func(llmtypes.StreamChunk)) error {
+	goal, err := readCodexGoal(ctx, s, r, thread, nil)
+	if err != nil {
+		return err
+	}
+	if goal != nil && goal.Status == "active" {
+		_, err = setCodexGoalStatus(ctx, s, r, thread, "paused", emit, pause.Reason)
+		return err
+	}
+	recordCodexGoal(s, goal, emit, "native_read")
+	return nil
 }

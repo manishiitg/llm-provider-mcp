@@ -436,6 +436,11 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	if idleCompact {
 		return c.compactAppThread(ctx, s, r, thread, emit)
 	}
+	if pause, ok := llmtypes.NativeGoalTurnPauseForSession(ctx, owner); ok {
+		if err := pauseCodexGoalForTurn(ctx, s, r, thread, pause, emit); err != nil {
+			return nil, err
+		}
+	}
 	goalCommand, hasGoalCommand := llmtypes.NativeGoalCommandForSession(ctx, owner)
 	activateGoal := false
 	if hasGoalCommand {
