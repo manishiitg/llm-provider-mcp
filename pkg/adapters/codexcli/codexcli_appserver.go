@@ -467,11 +467,21 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 	var started struct {
 		Turn codexAppTurn `json:"turn"`
 	}
+	var retry *llmtypes.NativeRetry
+	finishRetry := func(success bool) {
+		if retry == nil {
+			return
+		}
+		end := *retry
+		end.Phase = "end"
+		end.Success = success
+		retry = nil
+		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: &end})
+	}
+	defer func() { finishRetry(false) }()
 	for attempt := 0; ; attempt++ {
 		response, turnErr := c.consumeAppTurn(ctx, s, r, thread, turn, emit)
-		if attempt > 0 {
-			emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: &llmtypes.NativeRetry{Provider: "codex-cli", NativeSessionID: thread, NativeTurnID: turn, Phase: "end", Attempt: attempt, MaxAttempts: 5, Success: turnErr == nil}})
-		}
+		finishRetry(turnErr == nil)
 		var nativeErr *CodexTurnError
 		if !errors.As(turnErr, &nativeErr) || !nativeErr.Capacity() || attempt >= 5 {
 			if attempt > 0 && c.logger != nil {
@@ -489,7 +499,8 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 			return response, turnErr
 		}
 		delay := codexCapacityRetryWait(attempt)
-		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: &llmtypes.NativeRetry{Provider: "codex-cli", NativeSessionID: thread, NativeTurnID: turn, Phase: "start", Attempt: attempt + 1, MaxAttempts: 5, DelayMS: delay.Milliseconds()}})
+		retry = &llmtypes.NativeRetry{Provider: "codex-cli", NativeSessionID: thread, NativeTurnID: turn, Phase: "start", Attempt: attempt + 1, MaxAttempts: 5, DelayMS: delay.Milliseconds()}
+		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: retry})
 		if c.logger != nil {
 			c.logger.Infof("[CODEX_RETRY] owner=%s thread=%s turn=%s attempt=%d delay_ms=%d action=waiting reason=server_overloaded", owner, thread, turn, attempt+1, delay.Milliseconds())
 		}
