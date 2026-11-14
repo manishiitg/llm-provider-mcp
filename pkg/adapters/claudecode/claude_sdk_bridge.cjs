@@ -80,10 +80,11 @@ async function main() {
     pathToClaudeCodeExecutable: executable,
     cwd: process.cwd(), env: process.env,
     includePartialMessages: true,
+    thinking: { type: 'adaptive', display: 'summarized' },
     // Match the CLI's normal Claude Code instructions and project skills.
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settingSources: ['user', 'project', 'local'],
-    extraArgs: { 'replay-user-messages': null },
+    extraArgs: { 'replay-user-messages': null, 'thinking-display': 'summarized' },
   };
   // A confined chat: this bridge runs outside Landlock and every Claude Code
   // process the SDK starts is exec'd in place by the launcher, so it keeps its
