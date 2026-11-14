@@ -31,10 +31,12 @@ test('PLAT-872 async Agent without run_in_background survives parent result, acc
   t.after(() => rmSync(folder, { recursive: true, force: true }));
   // Same official query interface and native messages; no model or credentials.
   writeFileSync(join(folder, 'sdk.mjs'), `
-export function query({ prompt }) {
+export function query({ prompt, options }) {
+  if (options.thinking?.type !== 'adaptive' || options.thinking?.display !== 'summarized' || options.extraArgs?.['thinking-display'] !== 'summarized') throw new Error('thinking summaries not requested');
   const iterator = (async function* () {
     const first = await prompt.next();
     yield { type: 'system', subtype: 'init', session_id: 'native-test' };
+    yield { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Checking the parser.' } } };
     yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'agent-tool', name: 'Agent', input: { description: 'Check parser' } }] } };
     yield { type: 'system', subtype: 'task_started', task_type: 'local_agent', task_id: 'helper', run_id: '1', tool_use_id: 'agent-tool', description: 'Check parser' };
     yield { type: 'result', result: 'Helper is working', user_message_uuids: [first.value.uuid] };
@@ -65,6 +67,7 @@ export function query({ prompt }) {
   const finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
   child.stdin.write(JSON.stringify({ type: 'prompt', text: 'Delegate parser review' }) + '\n');
   await finished;
+  assert.ok(events.some(event => event.type === 'stream_event' && event.event?.delta?.thinking === 'Checking the parser.'));
   assert.deepEqual(events.filter(event => event.type === 'sdk_helper').map(event => event.helper.state), ['started', 'finished']);
   assert.ok(events.some(event => event.type === 'sdk_control_result' && event.id === 'new-direction' && !event.is_error));
   const result = events.filter(event => event.type === 'result').at(-1);

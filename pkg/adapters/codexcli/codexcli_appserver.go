@@ -110,6 +110,7 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 	args := []string{}
 	args = appendCodexDisableUpdateArgs(args)
 	args = appendCodexAccountArgs(args, opts)
+	features["concurrent_reasoning_summaries"] = true
 	if codexOptionBool(opts, MetadataKeyDisableShellTool) {
 		for _, feature := range codexBridgeOnlyDisabledFeatures {
 			args = append(args, "--disable", feature)
@@ -411,13 +412,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	if idleCompact {
 		return c.compactAppThread(ctx, s, r, thread, emit)
 	}
-	params := map[string]any{"threadId": thread, "input": codexAppTextInput(prompt)}
-	if effort := codexOptionString(opts, MetadataKeyReasoningEffort); effort != "" {
-		params["effort"] = effort
-	}
-	if summary := codexOptionString(opts, MetadataKeyReasoningSummary); summary != "" {
-		params["summary"] = summary
-	}
+	params := codexAppTurnParams(thread, prompt, opts)
 	var started struct {
 		Turn codexAppTurn `json:"turn"`
 	}
@@ -622,4 +617,18 @@ func codexAppThreadConfig(opts *llmtypes.CallOptions, approval string) (map[stri
 		config["sandbox_workspace_write.writable_roots"] = roots
 	}
 	return config, nil
+}
+
+// Request summaries explicitly: a model catalog may otherwise default to none.
+func codexAppTurnParams(thread, prompt string, opts *llmtypes.CallOptions) map[string]any {
+	params := map[string]any{"threadId": thread, "input": codexAppTextInput(prompt)}
+	if effort := codexOptionString(opts, MetadataKeyReasoningEffort); effort != "" {
+		params["effort"] = effort
+	}
+	summary := codexOptionString(opts, MetadataKeyReasoningSummary)
+	if summary == "" {
+		summary = "auto"
+	}
+	params["summary"] = summary
+	return params
 }

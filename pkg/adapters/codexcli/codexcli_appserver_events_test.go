@@ -139,3 +139,39 @@ func TestCodexAppCompactionReportsNativeCountsAndRefreshesStatus(t *testing.T) {
 		}
 	}
 }
+
+// PLAT-746: absent summary requests left enabled Thinking blank despite the
+// existing decoder. Keep request defaults and a provider delta on the real consumer.
+func TestCodexAppServerRequestsAndStreamsReasoningSummaries(t *testing.T) {
+	opts := &llmtypes.CallOptions{}
+	llmtypes.WithProviderAccountEnvironment(map[string]string{"CODEX_HOME": t.TempDir()})(opts)
+	config, err := codexAppThreadConfig(opts, "never")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config["features"].(map[string]any)["concurrent_reasoning_summaries"] != true {
+		t.Fatal("concurrent summaries not requested")
+	}
+	if codexAppTurnParams("thread", "hello", opts)["summary"] != "auto" {
+		t.Fatal("turn did not request a summary")
+	}
+	WithReasoningSummary("none")(opts)
+	if codexAppTurnParams("thread", "hello", opts)["summary"] != "none" {
+		t.Fatal("explicit summary preference lost")
+	}
+	r := &codexRPC{events: make(chan codexRPCMessage, 2), done: make(chan struct{})}
+	r.events <- codexRPCMessage{Method: "item/reasoning/summaryTextDelta", Params: json.RawMessage(`{"threadId":"thread","turnId":"turn","itemId":"reason","delta":"Checking the implementation."}`)}
+	r.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)}
+	var reasoning strings.Builder
+	_, err = (&CodexCLIAdapter{}).consumeAppTurn(context.Background(), &codexAppSession{threadID: "thread"}, r, "thread", "turn", func(c llmtypes.StreamChunk) {
+		if c.Type == llmtypes.StreamChunkTypeReasoning {
+			reasoning.WriteString(c.Content)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reasoning.String() != "Checking the implementation." {
+		t.Fatalf("thinking stream=%q", reasoning.String())
+	}
+}
