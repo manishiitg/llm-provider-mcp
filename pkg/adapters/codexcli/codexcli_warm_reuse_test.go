@@ -68,7 +68,7 @@ func TestCodexWarmConfigRefreshResumesThreadWithoutRelaunch(t *testing.T) {
 	}
 	adapter := NewCodexCLIAdapter("account-one", "test", &MockLogger{})
 	opts := &llmtypes.CallOptions{}
-	for _, option := range []llmtypes.CallOption{WithInteractiveSessionID("warm-regression"), WithPersistentInteractiveSession(true), WithProjectDirID(t.TempDir()), llmtypes.WithCodingProviderLaunchOnly(), WithMCPServers(`{"api-bridge":{"url":"https://example.com/one"}}`)} {
+	for _, option := range []llmtypes.CallOption{WithInteractiveSessionID("warm-regression"), WithPersistentInteractiveSession(true), WithProjectDirID(t.TempDir()), llmtypes.WithCodingProviderLaunchOnly(), WithMCPServers(`{"api-bridge":{"command":"mcpbridge","env":{"MCP_API_URL":"https://example.com/one"}}}`)} {
 		option(opts)
 	}
 	run := func(system string) {
@@ -78,7 +78,7 @@ func TestCodexWarmConfigRefreshResumesThreadWithoutRelaunch(t *testing.T) {
 		}
 	}
 	run("trusted first")
-	WithMCPServers(`{"api-bridge":{"url":"https://example.com/two"}}`)(opts)
+	WithMCPServers(`{"api-bridge":{"command":"mcpbridge","env":{"MCP_API_URL":"https://example.com/two"}}}`)(opts)
 	run("trusted second")
 	run("trusted second")
 	if launches != 1 || len(loads) != 2 || loads[0]["method"] != "thread/start" || loads[1]["method"] != "thread/resume" || loads[1]["developerInstructions"] != "trusted second" {
@@ -86,11 +86,11 @@ func TestCodexWarmConfigRefreshResumesThreadWithoutRelaunch(t *testing.T) {
 	}
 	config := loads[1]["config"].(map[string]any)
 	servers := config["mcp_servers"].(map[string]any)
-	if servers["api-bridge"].(map[string]any)["url"] != "https://example.com/two" {
+	if servers["api-bridge"].(map[string]any)["env"].(map[string]any)["MCP_API_URL"] != "https://example.com/two" {
 		t.Fatal("thread resumed with stale MCP config")
 	}
 	// Bridge credentials belong to thread configuration, not the child env.
-	WithMCPServers(`{"api-bridge":{"url":"https://example.com/two","env":{"MCP_API_TOKEN":"renewed-bridge-token"}}}`)(opts)
+	WithMCPServers(`{"api-bridge":{"command":"mcpbridge","env":{"MCP_API_URL":"https://example.com/two","MCP_API_TOKEN":"renewed-bridge-token"}}}`)(opts)
 	run("trusted second")
 	if launches != 1 || len(loads) != 3 {
 		t.Fatal("bridge token renewal relaunched the process")
