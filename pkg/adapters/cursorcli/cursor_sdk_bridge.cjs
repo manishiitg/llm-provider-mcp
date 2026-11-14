@@ -6,12 +6,33 @@ const { createInterface } = require('node:readline');
 const emit = value => process.stdout.write('\u0001aw ' + JSON.stringify(value) + '\n');
 const short = error => String(error?.message || error || 'Error').split('\n')[0].slice(0, 300);
 
+// Queued inputs are text and opaque Go capabilities only. A fetch is scoped to
+// one native intake, bounded, and forgotten before a kept session goes idle.
+function createImageFrames(publish) {
+ const pending=new Map(), active=new Set();let next=0;
+ return {
+  accept(frame){const entry=pending.get(frame.id);if(!entry)return;pending.delete(frame.id);active.delete(entry.inputID);clearTimeout(entry.timer);entry.resolve(frame.images||[]);frame.images=undefined;},
+  async message(input){
+   if(!input.image_id)return input.text;
+   if(active.has(input.image_id)){publish({type:"image_notice",input_id:input.image_id});return input.text;}
+   active.add(input.image_id);
+   const id=`image-${++next}`;
+   const images=await new Promise(resolve=>{
+    const entry={resolve,inputID:input.image_id,timer:setTimeout(()=>{pending.delete(id);active.delete(input.image_id);publish({type:'image_notice',input_id:input.image_id});resolve([]);},6000)};
+    pending.set(id,entry);publish({type:'image_fetch',id,input_id:input.image_id});
+   });
+   return images.length?{text:input.text,images:images.map(image=>({data:image.data,mimeType:image.mimeType}))}:input.text;
+  }
+ };
+}
+
 async function main() {
   // The SDK finds its bundled programs (ripgrep for grep/glob, the tree-sitter shell parser) in
   // node_modules above the running script. This script sits in a temp folder, so point argv[1] at
   // the SDK itself; otherwise every grep/glob fails "Ripgrep path not configured".
   process.argv[1] = process.argv[2];
   const { Agent, Cursor } = require(process.argv[2]);
+  const imageFrames=createImageFrames(emit);
   let agent, run, start, store, followups = [], early = [], busy = false;
   // PLAT-746-999: observe only metadata after the native turn boundary. Keep
   // the last run's status listener across the foreground result: a completion
@@ -115,20 +136,21 @@ async function main() {
     if (entry.settled) return;
     entry.settled = true;
     emit({ type: 'steer_outcome', id: entry.id, status: outcome });
-    if (outcome !== 'complete_delivered') followups.push(entry.text);
+    if (outcome !== 'complete_delivered') followups.push({text:entry.text,image_id:entry.image_id});
   };
   const drop = () => { for (const entry of steers) entry.settled = true; steers = []; followups = []; };
   // Steering and cancel arrive while a run streams, so they are handled as they are read.
   const control = request => {
     if (request.type === 'steer') {
       // Go only steers during its turn; before this turn's prompt arrives, hold it for that prompt.
-      if (!busy) { early.push(request.text); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
+      if (!busy) { early.push({text:request.text,image_id:request.image_id}); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
       // The prompt arrived but its run is still starting: answer it right after that run, same turn.
-      if (!run) { followups.push(request.text); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
+      if (!run) { followups.push({text:request.text,image_id:request.image_id}); emit({ type: 'steer_accepted', id: request.id, accepted: true }); return true; }
       emit({ type: 'steer_accepted', id: request.id, accepted: true });
-      const entry = { id: request.id, text: request.text };
+      const entry = { id: request.id, text: request.text, image_id:request.image_id };
       steers.push(entry);
-      entry.done = (run.steer ? run.steer(request.text) : Promise.resolve('revert_to_followup'))
+      const target=run;
+      entry.done = (target.steer ? imageFrames.message(entry).then(message=>target.steer(message)) : Promise.resolve('revert_to_followup'))
         .then(outcome => settle(entry, outcome), () => settle(entry, 'error'));
       return true;
     }
@@ -137,6 +159,7 @@ async function main() {
   };
   lines.on('line', line => {
     const request = JSON.parse(line);
+    if(request.type==='image_frame'){imageFrames.accept(request);return;}
     if ((busy || request.type === 'steer') && control(request)) return;
     queue.push(request); wake?.();
   });
@@ -191,7 +214,7 @@ async function main() {
     busy = true;
     followups = early;
     early = [];
-    let text = request.text, last;
+    let text = {text:request.text,image_id:request.image_id}, last;
     try {
       while (text !== undefined) {
         // After Cursor says its turn ended, a brief stream error can make the SDK resume the same run
@@ -255,12 +278,12 @@ async function main() {
             else if (update.type === 'thinking-delta') emit({ type: 'delta', kind: 'thinking', text: update.text });
           },
         };
-        try { run = await agent.send(text, sendOptions); }
+        try { run = await agent.send(await imageFrames.message(text), sendOptions); }
         catch (error) {
           // Same stale run as at start, if it appeared after: cancel it and retry once.
           if (!/already has active run/i.test(short(error)) || !(await cancelStale(agent.agentId).catch(() => false))) throw error;
           emit({ type: 'stale', agent_id: agent.agentId, action: 'cancelled' });
-          run = await agent.send(text, sendOptions);
+          run = await agent.send(await imageFrames.message(text), sendOptions);
         }
         const current = run;
         observation.run = current;

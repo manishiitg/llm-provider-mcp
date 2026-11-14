@@ -39,6 +39,7 @@ const cursorSDKMarker = "\x01aw "
 
 type cursorSDKEvent struct {
 	Type        string          `json:"type"`
+	InputID     string          `json:"input_id"`
 	RunID       string          `json:"run_id"`
 	ParentRunID string          `json:"parent_run_id"`
 	EventType   string          `json:"event_type"`
@@ -130,18 +131,20 @@ type cursorSDKUsage struct {
 }
 
 type cursorSDKProcess struct {
-	observe func(cursorSDKEvent)
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	writeMu sync.Mutex
-	events  chan cursorSDKEvent
-	done    chan struct{}
-	exited  chan struct{}
-	once    sync.Once
-	mu      sync.Mutex
-	err     error
-	acks    map[string]chan bool
-	stop    context.CancelFunc
+	images      map[string]*cursorImageSource
+	imageActive bool
+	observe     func(cursorSDKEvent)
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	writeMu     sync.Mutex
+	events      chan cursorSDKEvent
+	done        chan struct{}
+	exited      chan struct{}
+	once        sync.Once
+	mu          sync.Mutex
+	err         error
+	acks        map[string]chan bool
+	stop        context.CancelFunc
 }
 
 type cursorSDKSession struct {
@@ -167,11 +170,19 @@ var cursorSDKSessions = struct {
 func (p *cursorSDKProcess) send(v any) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
+	if stream, ok := v.(cursorSDKStreamingParams); ok {
+		err := stream.writeJSON(p.stdin)
+		if err == nil {
+			_, err = io.WriteString(p.stdin, "\n")
+		}
+		return err
+	}
 	return json.NewEncoder(p.stdin).Encode(v)
 }
 
 func (p *cursorSDKProcess) finish(err error) {
 	p.once.Do(func() {
+		p.clearImages()
 		p.mu.Lock()
 		p.err = err
 		p.mu.Unlock()
@@ -218,6 +229,14 @@ func (p *cursorSDKProcess) read(stdout io.Reader) {
 		if err := json.Unmarshal(line, &event); err != nil {
 			p.finish(fmt.Errorf("invalid Cursor SDK bridge event: %w", err))
 			return
+		}
+		if event.Type == "image_notice" {
+			p.imageNotice(event.InputID)
+			continue
+		}
+		if event.Type == "image_fetch" {
+			p.fetchImages(event)
+			continue
 		}
 		if event.Type == "background_meta" {
 			// Metadata never enters the foreground event queue: the bridge
@@ -706,7 +725,7 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 	if strings.TrimSpace(prompt) == "" {
 		return nil, fmt.Errorf("Cursor prompt is empty")
 	}
-	response, err = c.consumeSDKTurn(ctx, s, p, prompt, emit)
+	response, err = c.consumeSDKTurn(ctx, s, p, prompt, emit, owner)
 	if err == nil {
 		s.mu.Lock()
 		s.hasHistory = true
@@ -715,9 +734,18 @@ func (c *CursorCLIAdapter) generateContentSDK(ctx context.Context, messages []ll
 	return response, err
 }
 
-func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSession, p *cursorSDKProcess, prompt string, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSession, p *cursorSDKProcess, prompt string, emit func(llmtypes.StreamChunk), owners ...string) (*llmtypes.ContentResponse, error) {
+	owner := ""
+	if len(owners) > 0 {
+		owner = owners[0]
+	}
 	meta := map[string]any{"cursor_session_id": s.agentID, "cursor_stream_source": "sdk"}
-	if err := p.send(map[string]any{"type": "prompt", "text": prompt}); err != nil {
+	p.mu.Lock()
+	p.imageActive = true
+	p.mu.Unlock()
+	defer p.clearImages()
+	imageID := p.registerImages(ctx, owner)
+	if err := p.send(map[string]any{"type": "prompt", "text": prompt, "image_id": imageID}); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -915,7 +943,8 @@ func SendCursorSDKInput(ctx context.Context, owner, message string) error {
 	p.acks[id] = ack
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.acks, id); p.mu.Unlock() }()
-	if err := p.send(map[string]any{"type": "steer", "id": id, "text": message}); err != nil {
+	imageID := p.registerImages(ctx, owner)
+	if err := p.send(map[string]any{"type": "steer", "id": id, "text": message, "image_id": imageID}); err != nil {
 		return fmt.Errorf("%w: %v", llmtypes.ErrCodingAgentInputNotSent, err)
 	}
 	select {
