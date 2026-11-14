@@ -256,7 +256,7 @@ export function query({ prompt }) {
 test('PLAT-746-1000 a kept SDK prompt iterator releases delivered image blocks', { timeout: 8000 }, async t => {
   const folder = mkdtempSync(join(tmpdir(), 'sdk-image-retention-'));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
-  writeFileSync(join(folder, 'sdk.mjs'), `
+  writeFileSync(join(folder, 'sdk.mjs'), String.raw`
 const tick = () => new Promise(resolve => setImmediate(resolve));
 export function query({ prompt }) {
   let written = 0, firstID, secondID, imageRef;
@@ -298,6 +298,8 @@ export function query({ prompt }) {
   t.after(() => child.kill());
   let pending = '', stderr = '', released = false, finishedWarm = false;
   child.stderr.on('data', data => stderr += data);
+  // The exit verdict reports the bridge error even if it closes a large write.
+  child.stdin.on('error', () => {});
   child.stdout.on('data', data => {
     pending += data;
     while (pending.includes('\n')) {
