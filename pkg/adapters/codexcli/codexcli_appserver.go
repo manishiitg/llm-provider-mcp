@@ -534,10 +534,6 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 			prompt += "\n\n" + originalPrompt
 		}
 	}
-	params, closeImages, err := codexParamsWithImages(ctx, owner, codexAppTurnParams(thread, prompt, opts), messages)
-	if err != nil {
-		return nil, err
-	}
 	switch p := params.(type) {
 	case map[string]any:
 		p["input"] = codexAppTextInput(prompt)

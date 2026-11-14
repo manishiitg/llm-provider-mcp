@@ -134,7 +134,7 @@ func TestCodexNativeImagesPromptSteerAndRefusedDelivery(t *testing.T) {
 // stripped before entering the event queue, without changing text escapes or
 // splitting the next RPC frame. No image data belongs in the host transcript.
 func TestCodexImageEchoIsDiscardedBeforeEventQueue(t *testing.T) {
-	wire := `{"method":"item/started","params":{"item":{"type":"userMessage","content":[{"type":"text","text":"Question \\"quoted\\""},{"type":"image","url":"data:image/png;base64,` + strings.Repeat("A", 17<<20) + `"}]}}}` + "\n" + `{"id":"next","result":{}}` + "\n"
+	wire := `{"method":"item/started","params":{"item":{"type":"userMessage","content":[{"type":"text","text":"Question \"quoted\""},{"type":"image","url":"data:image/png;base64,` + strings.Repeat("A", 17<<20) + `"}]}}}` + "\n" + `{"id":"next","result":{}}` + "\n"
 	reader := bufio.NewReaderSize(strings.NewReader(wire), 4096)
 	frame, err := readCodexImageSafeFrame(reader)
 	if err != nil {
