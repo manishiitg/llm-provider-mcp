@@ -440,25 +440,11 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		}
 	}
 	params := codexAppTurnParams(thread, prompt, opts)
-	var started struct {
-		Turn codexAppTurn `json:"turn"`
-	}
-	if err = r.call(ctx, "turn/start", params, &started); err != nil {
-		r.close()
+	turn, err := startCodexGoalTurn(ctx, s, r, thread, params, activateGoal, emit)
+	if err != nil {
 		return nil, err
 	}
-	turn := started.Turn.ID
-	if turn == "" {
-		r.close()
-		return nil, fmt.Errorf("codex app-server returned no turn id")
-	}
 
-	if activateGoal {
-		if _, goalErr := setCodexGoalStatus(ctx, s, r, thread, "active", emit, "goal_started"); goalErr != nil {
-			_ = r.call(ctx, "turn/interrupt", map[string]any{"threadId": thread, "turnId": turn}, nil)
-			return nil, goalErr
-		}
-	}
 	s.mu.Lock()
 	s.turnID = turn
 	s.steers = nil

@@ -46,7 +46,7 @@ func recordCodexGoal(s *codexAppSession, goal *llmtypes.NativeGoal, emit func(ll
 	s.goal = goal
 	owner, thread := s.owner, s.threadID
 	s.mu.Unlock()
-	if !changed {
+	if !changed && reason != "native_read" {
 		return
 	}
 	status, action := "cleared", "cleared"
@@ -166,6 +166,9 @@ func (c *CodexCLIAdapter) prepareCodexGoalCommand(ctx context.Context, s *codexA
 	case "clear":
 		err = r.call(ctx, "thread/goal/clear", map[string]any{"threadId": thread}, nil)
 		if err == nil {
+			s.mu.Lock()
+			s.goalActivationPending = false
+			s.mu.Unlock()
 			recordCodexGoal(s, nil, emit, "person_clear")
 		}
 		return "", false, codexAppResponse(s, "", codexAppUsage{}), err
@@ -251,4 +254,47 @@ func codexGoalActive(s *codexAppSession) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.goalActivationPending || (s.goal != nil && s.goal.Status == "active")
+}
+
+// Startup can fail after the native goal accepted activation. Cleanup cannot
+// use the canceled caller context, and a failed cleanup must end the process.
+func startCodexGoalTurn(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, params map[string]any, activate bool, emit func(llmtypes.StreamChunk)) (string, error) {
+	startedOK := false
+	defer func() {
+		if activate && !startedOK {
+			s.mu.Lock()
+			s.goalActivationPending = false
+			s.mu.Unlock()
+		}
+	}()
+	var started struct {
+		Turn codexAppTurn `json:"turn"`
+	}
+	if err := r.call(ctx, "turn/start", params, &started); err != nil {
+		if activate {
+			log.Printf("[AGENT_GOAL] session=%s native=%s action=failed status=paused reason=initial_turn_failed", s.owner, thread)
+		}
+		r.close()
+		return "", err
+	}
+	turn := started.Turn.ID
+	if turn == "" {
+		r.close()
+		return "", fmt.Errorf("codex app-server returned no turn id")
+	}
+	if activate {
+		if _, err := setCodexGoalStatus(ctx, s, r, thread, "active", emit, "goal_started"); err != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, pauseErr := setCodexGoalStatus(cleanup, s, r, thread, "paused", emit, "activation_failed")
+			interruptErr := r.call(cleanup, "turn/interrupt", map[string]any{"threadId": thread, "turnId": turn}, nil)
+			if pauseErr != nil || interruptErr != nil {
+				log.Printf("[AGENT_GOAL] session=%s native=%s action=failed status=unknown reason=activation_cleanup_failed", s.owner, thread)
+				r.close()
+			}
+			return "", err
+		}
+	}
+	startedOK = true
+	return turn, nil
 }

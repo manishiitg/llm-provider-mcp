@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -195,6 +196,9 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					next = event.TurnID
 				}
 				if next != "" && next != turn {
+					if waitingForGoal {
+						log.Printf("[AGENT_GOAL] session=%s native=%s turn=%s action=started status=active reason=native_continuation", s.owner, thread, next)
+					}
 					carried = joined()
 					compact = nil
 					turn, followupC, finishedResponse, final = next, nil, nil, ""
