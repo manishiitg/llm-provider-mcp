@@ -499,6 +499,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	defer questions.Close()
 	var scanErr error
 	var text claudeStructuredText
+	defer text.endNativeRetry(false, emitChunk)
 	var resultText string
 	// answerText is the answer of the last successful result of this turn. A
 	// turn held open after its answer (a steer, moved-aside work) and then
@@ -642,7 +643,6 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					if c.logger != nil {
 						c.logger.Infof("[CLAUDE_RETRY] session=%s attempt=%d max=%d delay_ms=%d action=waiting", owner, ev.Attempt, ev.MaxRetries, ev.RetryDelayMS)
 					}
-					emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeProviderRetry, ProviderRetry: &llmtypes.ProviderRetry{Provider: "claude-code", Attempt: ev.Attempt, MaxAttempts: ev.MaxRetries, DelayMS: ev.RetryDelayMS}})
 				}
 
 				if ev.Subtype == "init" && ev.Model != "" {

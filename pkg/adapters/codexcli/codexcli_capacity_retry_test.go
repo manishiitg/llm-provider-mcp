@@ -62,7 +62,7 @@ func TestCodexCapacityRetryContinuesEmptyInputAndCaps(t *testing.T) {
 		r.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"first","status":"failed","error":{"message":"busy","codexErrorInfo":"serverOverloaded"}}}`)}
 		retries := 0
 		_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(context.Background(), &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
-			if c.ProviderRetry != nil {
+			if c.NativeRetry != nil && c.NativeRetry.Phase == "start" {
 				retries++
 			}
 		})
@@ -82,7 +82,7 @@ func TestCodexCapacityRetryContinuesEmptyInputAndCaps(t *testing.T) {
 	r.stdin = w
 	r.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"first","status":"failed","error":{"message":"busy","codexErrorInfo":"serverOverloaded"}}}`)}
 	_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(ctx, &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
-		if c.ProviderRetry != nil {
+		if c.NativeRetry != nil && c.NativeRetry.Phase == "start" {
 			cancel()
 		}
 	})
