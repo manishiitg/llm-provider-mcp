@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/manishiitg/multi-llm-provider-go/internal/commandlabel"
+	"github.com/manishiitg/multi-llm-provider-go/pkg/commandlabel"
 	"io"
 	"os/exec"
 	"sort"
