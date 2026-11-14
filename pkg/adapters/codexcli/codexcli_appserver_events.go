@@ -248,6 +248,7 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 						s.promptEpoch++
 					}
 					s.turnID = next
+					s.turnEnded = false
 					s.mu.Unlock()
 					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: map[string]any{"codex_thread_id": thread, "codex_turn_id": next}})
 					if c.logger != nil {
@@ -260,6 +261,9 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				event.TurnID = event.Turn.ID
 			}
 			if event.TurnID != turn {
+				if msg.Method == "turn/completed" && c.logger != nil {
+					c.logger.Infof("[CODEX_TURN] owner=%s thread=%s turn=%s event_turn=%s action=ignored reason=other_turn", s.owner, thread, turn, event.TurnID)
+				}
 				continue
 			}
 			metadata := map[string]any{"codex_thread_id": thread, "codex_turn_id": turn, "codex_stream_source": "app-server"}
@@ -387,6 +391,9 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					emit(llmtypes.StreamChunk{Type: kind, Content: codexToolItemLabel(tool), ToolName: codexToolItemName(tool), ToolCallID: tool.ID, ToolArgs: codexToolItemArgs(tool), ToolResult: codexToolItemResult(tool), ToolDuration: duration, Metadata: metadata})
 				}
 			case "turn/completed":
+				s.mu.Lock()
+				s.turnEnded = true
+				s.mu.Unlock()
 				if event.Turn.Status == "completed" && codexGoalActive(s) {
 					finishedResponse = codexAppResponse(s, joined(), usage)
 					followup := time.NewTimer(codexGoalFollowupWait)
@@ -528,6 +535,10 @@ func codexAppRateLimits(raw json.RawMessage) *codexRateLimits {
 // is then followed like any turn (its contextCompaction item, token usage and
 // turn/completed). No person message is sent.
 func (c *CodexCLIAdapter) compactAppThread(ctx context.Context, s *codexAppSession, r *codexRPC, thread string, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+	s.mu.Lock()
+	s.compacting = true
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.compacting = false; s.mu.Unlock() }()
 	if err := r.call(ctx, "thread/compact/start", map[string]any{"threadId": thread}, nil); err != nil {
 		r.close()
 		return nil, err
