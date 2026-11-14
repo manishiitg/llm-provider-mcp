@@ -32,6 +32,7 @@ type codexAppSession struct {
 	rpc                          *codexRPC
 	threadID, turnID, cwd, model string
 	fingerprint                  [32]byte
+	processFingerprint           [32]byte
 	fingerprintParts             map[string][32]byte
 	fingerprintCustom            map[string][32]byte
 	status                       *llmtypes.StatusLine
@@ -107,15 +108,7 @@ func codexOptionBool(opts *llmtypes.CallOptions, key string) bool {
 	return v
 }
 
-func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.CallOptions, cwd string) (*codexRPC, error) {
-	bin, err := exec.LookPath("codex")
-	if err != nil {
-		return nil, err
-	}
-	policy := codexOptionString(opts, MetadataKeyApprovalPolicy)
-	if policy == "" {
-		policy = "never"
-	}
+func codexAppLaunchArgs(opts *llmtypes.CallOptions) []string {
 	args := []string{}
 	args = appendCodexDisableUpdateArgs(args)
 	args = appendCodexAccountArgs(args, opts)
@@ -134,6 +127,45 @@ func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.Ca
 		}
 	}
 	args = append(args, "app-server", "--listen", "stdio://")
+	return args
+}
+
+var startCodexAppServer = func(c *CodexCLIAdapter, ctx context.Context, opts *llmtypes.CallOptions, cwd string) (*codexRPC, error) {
+	return c.launchAppServer(ctx, opts, cwd)
+}
+
+// The child retains its executable/account/environment and OS sandbox. Thread
+// instructions, MCP servers and Codex-level modes can be refreshed over RPC.
+func (c *CodexCLIAdapter) appProcessFingerprint(opts *llmtypes.CallOptions, cwd string) ([32]byte, error) {
+	bin, err := exec.LookPath("codex")
+	if err != nil {
+		return [32]byte{}, err
+	}
+	info, err := os.Stat(bin)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	reads, err := strictCodexMCPRuntimePaths(opts)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	sandboxCWD := ""
+	if opts.CLISecurity != nil && opts.CLISecurity.Confined() {
+		sandboxCWD = cwd
+	}
+	raw, err := json.Marshal(map[string]any{"sandbox_cwd": sandboxCWD, "binary": bin, "size": info.Size(), "mtime": info.ModTime().UnixNano(), "argv": codexAppLaunchArgs(opts), "security": opts.CLISecurity, "mcp_reads": reads, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)})
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(raw), nil
+}
+
+func (c *CodexCLIAdapter) launchAppServer(ctx context.Context, opts *llmtypes.CallOptions, cwd string) (*codexRPC, error) {
+	bin, err := exec.LookPath("codex")
+	if err != nil {
+		return nil, err
+	}
+	args := codexAppLaunchArgs(opts)
 	life, stop := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(life, bin, args...)
 	cmd.Dir = cwd
@@ -305,12 +337,17 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		return nil, err
 	}
 	fingerprint := sha256.Sum256(raw)
+	processFingerprint, err := c.appProcessFingerprint(opts, cwd)
+	if err != nil {
+		return nil, err
+	}
 	parts := codexFingerprintParts(config)
 	customParts := codexCustomFingerprintParts(config)
 	s.mu.Lock()
 	r := s.rpc
 	thread := s.threadID
 	oldFingerprint := s.fingerprint
+	oldProcessFingerprint := s.processFingerprint
 	oldParts := s.fingerprintParts
 	oldCustomParts := s.fingerprintCustom
 	s.mu.Unlock()
@@ -327,27 +364,35 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		default:
 		}
 	}
-	if r != nil && (oldFingerprint != fingerprint || (resume != "" && resume != thread)) {
-		reason = "resume_changed"
-		if oldFingerprint != fingerprint {
-			reason = "fingerprint_changed"
-		}
+	if r != nil && oldProcessFingerprint != processFingerprint {
+		reason = "process_config_changed"
 		r.close()
 		r = nil
 	}
+	reloadThread := r == nil || oldFingerprint != fingerprint || (resume != "" && resume != thread)
 	if c.logger != nil {
 		c.logger.Infof("[CODEX_WARM] owner=%s persistent=%t action=%s changed=%s custom_keys=%s", owner, persistent, reason, codexFingerprintChanges(oldParts, parts), codexCustomFingerprintChanges(oldCustomParts, customParts))
 	}
 	if r == nil {
-		if oldFingerprint != ([32]byte{}) && oldFingerprint != fingerprint {
+		// A different process boundary may be a different account. Resume only
+		// an identity supplied by the host's current admitted request.
+		if oldProcessFingerprint != processFingerprint {
 			thread = ""
-		} // caller supplies the authorized resume identity
+		}
+		r, err = startCodexAppServer(c, ctx, opts, cwd)
+		if err != nil {
+			if c.logger != nil {
+				c.logger.Infof("[CODEX_WARM] owner=%s action=process_failed reason=launch_error", owner)
+			}
+			return nil, err
+		}
+		if c.logger != nil {
+			c.logger.Infof("[CODEX_WARM] owner=%s action=process_started reason=%s", owner, reason)
+		}
+	}
+	if reloadThread {
 		if resume != "" {
 			thread = resume
-		}
-		r, err = c.launchAppServer(ctx, opts, cwd)
-		if err != nil {
-			return nil, err
 		}
 		sandbox := codexOptionString(opts, MetadataKeySandbox)
 		if sandbox == "" {
@@ -395,6 +440,9 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 			Model string `json:"model"`
 		}
 		if err = r.call(ctx, method, params, &result); err != nil {
+			if c.logger != nil {
+				c.logger.Infof("[CODEX_WARM] owner=%s action=thread_load_failed method=%s reason=rpc_error", owner, method)
+			}
 			r.close()
 			return nil, err
 		}
@@ -403,17 +451,24 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 			return nil, fmt.Errorf("codex app-server returned no thread id")
 		}
 		thread = result.Thread.ID
+		if c.logger != nil {
+			c.logger.Infof("[CODEX_WARM] owner=%s action=thread_loaded method=%s reason=config_or_identity_changed", owner, method)
+		}
 		s.mu.Lock()
 		s.rpc = r
 		s.threadID = thread
 		s.cwd = cwd
 		s.model = result.Model
 		s.fingerprint = fingerprint
+		s.processFingerprint = processFingerprint
 		s.fingerprintParts = parts
 		s.fingerprintCustom = customParts
 		s.status = nil
 		s.rateLimits = nil
 		s.mu.Unlock()
+	}
+	if !reloadThread && c.logger != nil {
+		c.logger.Infof("[CODEX_WARM] owner=%s action=thread_reuse reason=unchanged", owner)
 	}
 	// Account snapshots are private to this process/account. Some short turns
 	// emit no rateLimits/updated notification, so seed from the native read.
