@@ -20,6 +20,19 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 	var questions nativeinput.Requests
 	defer questions.Close()
 	completed := false
+	defer func() {
+		if err != nil || !completed || response == nil {
+			return
+		}
+		if codexGoalActive(s) {
+			llmtypes.NextPromptFor(ctx, "codex-cli", s.owner).Finish(llmtypes.NextPromptResult{Reason: "native_goal_running"})
+			return
+		}
+		s.mu.Lock()
+		nativeTurn := s.turnID
+		s.mu.Unlock()
+		sampleCodexNextPrompt(ctx, s, r, thread, nativeTurn)
+	}()
 	// Protocol/read errors must not leave an unobserved native turn running.
 	defer func() {
 		if err != nil && !completed {
@@ -394,7 +407,6 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				completed = true
 				switch event.Turn.Status {
 				case "completed":
-					sampleCodexNextPrompt(ctx, s, r, thread, event.Turn.ID)
 					return codexAppResponse(s, joined(), usage), nil
 				case "interrupted":
 					return nil, context.Canceled

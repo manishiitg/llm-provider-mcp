@@ -826,14 +826,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				// guaranteed to be flushed. Let it exit naturally first; the
 				// signal sequence remains a backstop for a stuck CLI.
 				if !ev.SDKContinues {
-					if sess != nil {
-						sess.mu.Lock()
-						scope := sess.nextPrompt
-						sess.mu.Unlock()
-						if scope.Complete != nil {
-							time.AfterFunc(5*time.Second, func() { scope.Finish(llmtypes.NextPromptResult{Reason: "no_suggestion"}) })
-						}
-					}
+
 					if ev.SDKParked && sess != nil && !ev.IsError {
 						if keepAllowed {
 							// The answer ends the turn; the session stays for the running tasks.
