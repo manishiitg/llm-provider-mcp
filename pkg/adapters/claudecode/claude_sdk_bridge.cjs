@@ -263,8 +263,10 @@ async function main() {
       await Promise.resolve();
       if (nextPromptCapable && next.nextPromptTurn) {
         if (typeof run?.applyFlagSettings === 'function') {
-          await run.applyFlagSettings({ promptSuggestionEnabled: next.nextPrompt && !suggestionNearLimit });
+          try { await run.applyFlagSettings({ promptSuggestionEnabled: next.nextPrompt && !suggestionNearLimit }); }
+          catch { nextPromptCapable = false; emit({type:'sdk_prompt_skipped', sdk_prompt_turn:next.nextPromptTurn, prompt_skip_reason:'unsupported_sdk'}); }
         } else {
+          nextPromptCapable = false;
           emit({type:'sdk_prompt_skipped', sdk_prompt_turn:next.nextPromptTurn, prompt_skip_reason:'unsupported_sdk'});
         }
       }
@@ -290,12 +292,12 @@ async function main() {
         for (const [name, window] of Object.entries(limit.unifiedWindows || {})) if (typeof window.utilization === 'number') suggestionWindows.set(name, {used:window.utilization, resets:window.resetsAt});
         suggestionNearLimit = limit.status === 'rejected' || [...suggestionWindows.values()].some(window => window.used >= 0.9 && (!window.resets || window.resets * 1000 > Date.now()));
         if (suggestionNearLimit && nextPromptCapable && typeof run.applyFlagSettings === 'function') {
-          await run.applyFlagSettings({ promptSuggestionEnabled:false });
+          try { await run.applyFlagSettings({ promptSuggestionEnabled:false }); } catch { nextPromptCapable = false; }
           emit({type:'sdk_prompt_skipped', sdk_prompt_turn:nextPromptTurn, prompt_skip_reason:'near_limit'});
         }
       }
       if (event.type === 'prompt_suggestion') {
-        if (!turnActive && settledPromptTurn && !suggestionNearLimit) emit({...event, sdk_prompt_turn:settledPromptTurn});
+        if (nextPromptCapable && !turnActive && settledPromptTurn && !suggestionNearLimit) emit({...event, sdk_prompt_turn:settledPromptTurn});
         continue;
       }
       helpers.observe(event);
