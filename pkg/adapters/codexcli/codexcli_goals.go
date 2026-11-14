@@ -318,7 +318,7 @@ func pauseCodexGoalForTurn(ctx context.Context, s *codexAppSession, r *codexRPC,
 	if err != nil {
 		return err
 	}
-	if goal != nil && goal.Status == "active" {
+	if goal != nil && (goal.Status == "active" || (goal.Status == "usage_limited" && pause.Reason == "background_wake")) {
 		_, err = setCodexGoalStatus(ctx, s, r, thread, "paused", emit, pause.Reason)
 		return err
 	}
