@@ -31,16 +31,27 @@ func AgyACPSelected() bool {
 	return !strings.EqualFold(strings.TrimSpace(os.Getenv(AgyTransportEnv)), "tmux")
 }
 
+type agyACPConfigOption struct {
+	ID       string `json:"id"`
+	Category string `json:"category"`
+	Type     string `json:"type"`
+}
+type agyACPConfigResult struct {
+	SessionID     string               `json:"sessionId"`
+	ConfigOptions []agyACPConfigOption `json:"configOptions"`
+}
+
 type agyACPSession struct {
-	turnMu      sync.Mutex
-	mu          sync.Mutex
-	rpc         *agyACP
-	sessionID   string
-	workdir     string
-	model       string
-	fingerprint string
-	listener    chan agyACPMessage
-	release     func()
+	configOptions []agyACPConfigOption
+	turnMu        sync.Mutex
+	mu            sync.Mutex
+	rpc           *agyACP
+	sessionID     string
+	workdir       string
+	model         string
+	fingerprint   string
+	listener      chan agyACPMessage
+	release       func()
 }
 
 var agyACPSessions = struct {
@@ -193,13 +204,11 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 	if strings.TrimSpace(system) != "" {
 		params["_meta"] = map[string]any{"antigravity": map[string]any{"systemPrompt": map[string]any{"append": system}}}
 	}
-	var opened struct {
-		SessionID string `json:"sessionId"`
-	}
+	var opened agyACPConfigResult
 	if resume != "" {
 		// The chat's own conversation, by its exact id; never a fresh one.
 		params["sessionId"] = resume
-		err = r.call(initCtx, "session/load", params, nil)
+		err = r.call(initCtx, "session/load", params, &opened)
 		opened.SessionID = resume
 	} else {
 		err = r.call(initCtx, "session/new", params, &opened)
@@ -212,7 +221,10 @@ func (a *AgyCLIAdapter) launchAgyACP(ctx context.Context, opts *llmtypes.CallOpt
 		s.closeNow()
 		return nil, fmt.Errorf("agy ACP did not return a session id")
 	}
+	s.mu.Lock()
 	s.sessionID = opened.SessionID
+	s.mu.Unlock()
+	s.rememberConfigOptions(opened.ConfigOptions)
 	return s, nil
 }
 
@@ -241,6 +253,21 @@ func (s *agyACPSession) pump() {
 		case <-s.rpc.done:
 			return
 		case msg := <-s.rpc.events:
+			s.mu.Lock()
+			currentSession := s.sessionID
+			s.mu.Unlock()
+			if msg.Method == "session/update" {
+				var notification struct {
+					SessionID string `json:"sessionId"`
+					Update    struct {
+						Kind          string               `json:"sessionUpdate"`
+						ConfigOptions []agyACPConfigOption `json:"configOptions"`
+					} `json:"update"`
+				}
+				if json.Unmarshal(msg.Params, &notification) == nil && notification.SessionID == currentSession && notification.Update.Kind == "config_option_update" {
+					s.rememberConfigOptions(notification.Update.ConfigOptions)
+				}
+			}
 			s.mu.Lock()
 			listener := s.listener
 			s.mu.Unlock()
@@ -391,14 +418,8 @@ func (a *AgyCLIAdapter) generateContentACP(ctx context.Context, messages []llmty
 	}
 	s.turnMu.Lock()
 	defer s.turnMu.Unlock()
-	if s.model != model {
-		if err := s.rpc.call(ctx, "session/set_config_option", map[string]any{"sessionId": s.sessionID, "configId": "model", "value": modelOption}, nil); err != nil {
-			return nil, err
-		}
-		if thought != "" {
-			_ = s.rpc.call(ctx, "session/set_config_option", map[string]any{"sessionId": s.sessionID, "configId": "thought_level", "value": thought}, nil)
-		}
-		s.model = model
+	if err := s.applySelection(ctx, model, modelOption, thought); err != nil {
+		return nil, err
 	}
 	if llmtypes.CodingProviderLaunchOnlyFromOptions(opts) {
 		return agyACPResponse(s, "", nil), nil
@@ -635,4 +656,55 @@ func agyPinHome(env []string, home string) []string {
 		}
 	}
 	return append(out, "HOME="+home)
+}
+
+func (s *agyACPSession) rememberConfigOptions(options []agyACPConfigOption) {
+	if options == nil {
+		return
+	}
+	s.mu.Lock()
+	s.configOptions = append([]agyACPConfigOption{}, options...)
+	s.mu.Unlock()
+}
+
+// Called under turnMu: model selection is retained, but thinking must be
+// reasserted on every turn, including unchanged-model turns and resumes.
+func (s *agyACPSession) applySelection(ctx context.Context, model, modelOption, thought string) error {
+	if s.model != model {
+		var result agyACPConfigResult
+		if err := s.rpc.call(ctx, "session/set_config_option", map[string]any{"sessionId": s.sessionID, "configId": "model", "value": modelOption}, &result); err != nil {
+			return err
+		}
+		s.rememberConfigOptions(result.ConfigOptions)
+		s.model = model
+	}
+	if thought == "" {
+		return nil
+	}
+	s.mu.Lock()
+	id := ""
+	for _, option := range s.configOptions {
+		if option.Category == "thought_level" && option.Type == "select" {
+			id = option.ID
+			break
+		}
+	}
+	s.mu.Unlock()
+	if id == "" {
+		log.Printf("[AGY_CONFIG] thought_level_unavailable=true")
+		return nil
+	}
+	var result agyACPConfigResult
+	if err := s.rpc.call(ctx, "session/set_config_option", map[string]any{"sessionId": s.sessionID, "configId": id, "value": thought}, &result); err != nil {
+		// ACP errors may echo inputs: log only the failure category and numeric code.
+		code := 0
+		var rpcError *agyACPError
+		if errors.As(err, &rpcError) {
+			code = rpcError.Code
+		}
+		log.Printf("[AGY_CONFIG] thought_level_set_failed=true code=%d", code)
+	} else {
+		s.rememberConfigOptions(result.ConfigOptions)
+	}
+	return nil
 }
