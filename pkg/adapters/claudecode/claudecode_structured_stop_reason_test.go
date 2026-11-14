@@ -21,11 +21,13 @@ func TestClaudeStructuredTerminalReasons(t *testing.T) {
 		check  func(error) bool
 	}{
 		"prompt too long": {`{"type":"result","is_error":true,"result":"Prompt is too long","terminal_reason":"prompt_too_long"}`, func(err error) bool {
-			return llmerrors.KindOf(err) == llmerrors.KindContextTooLong && strings.Contains(err.Error(), "Compact it or start a new chat")
+			return err != nil && llmerrors.KindOf(err) == llmerrors.KindContextTooLong && strings.Contains(err.Error(), "Compact it or start a new chat")
 		}},
 		"blocking limit":                    {`{"type":"result","is_error":true,"result":"","terminal_reason":"blocking_limit"}`, func(err error) bool { return llmerrors.KindOf(err) == llmerrors.KindContextTooLong }},
 		"aborted inside a success envelope": {`{"type":"result","is_error":false,"result":"partial","terminal_reason":"aborted_tools"}`, func(err error) bool { return errors.Is(err, context.Canceled) }},
-		"aborted streaming":                 {`{"type":"result","is_error":true,"result":"x","terminal_reason":"aborted_streaming"}`, func(err error) bool { return errors.Is(err, context.Canceled) }},
+		"abort after the answer was given": {`{"type":"result","is_error":false,"result":"Answer","sdk_continues":true}
+{"type":"result","is_error":false,"result":"","terminal_reason":"aborted_tools"}`, func(err error) bool { return err == nil }},
+		"aborted streaming": {`{"type":"result","is_error":true,"result":"x","terminal_reason":"aborted_streaming"}`, func(err error) bool { return errors.Is(err, context.Canceled) }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -38,7 +40,7 @@ func TestClaudeStructuredTerminalReasons(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			_, err := adapter.generateContentStructured(ctx, []llmtypes.MessageContent{{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.TextContent{Text: "hello"}}}}, &llmtypes.CallOptions{Metadata: &llmtypes.Metadata{Custom: map[string]interface{}{MetadataKeyWorkingDir: dir}}})
-			if err == nil || !tc.check(err) {
+			if !tc.check(err) {
 				t.Fatalf("unexpected result: %v", err)
 			}
 		})
