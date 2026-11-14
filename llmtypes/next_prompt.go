@@ -58,6 +58,10 @@ func (scope NextPromptScope) Finish(result NextPromptResult) {
 			result.Reason = "ineligible_turn"
 		}
 	}
+	if result.Text != "" && !scope.Current() {
+		result.Text = ""
+		result.Reason = "newer_input_or_stopped"
+	}
 	// A suggestion is short plain text, not a generated reply or tool request.
 	if utf8.RuneCountInString(result.Text) > 500 {
 		result.Text = ""
