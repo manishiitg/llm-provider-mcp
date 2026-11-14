@@ -233,7 +233,7 @@ async function main() {
         const helper = (callId, status, durationMs) => {
           if (!metaID(callId)) return;
           const row = {type:'helper',agent_id:metaID(agent.agentId),call_id:callId,status,
-            duration_ms:Number.isFinite(durationMs) && durationMs>=0 ? durationMs : undefined};
+            duration_ms:Number.isFinite(durationMs) && durationMs>=0 && durationMs<=Number.MAX_SAFE_INTEGER ? Math.floor(durationMs) : undefined};
           if (!observation.run) pendingHelpers.push(row);
           else emit({...row,run_id:metaID(observation.run.id)});
         };
