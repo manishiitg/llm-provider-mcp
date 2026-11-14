@@ -479,7 +479,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			}
 		}
 		inputErr := sdkProcess.write(input)
-		finishClaudeImageDelivery(owner, input, inputErr)
+		finishClaudeImageDelivery(owner, input, inputErr, "bridge_written")
 		closeImages()
 		if err := inputErr; err != nil {
 			sess.kill()
