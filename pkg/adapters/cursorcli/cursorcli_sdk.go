@@ -745,7 +745,10 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 	p.imageActive = true
 	p.mu.Unlock()
 	defer p.clearImages()
-	imageID := p.registerImages(ctx, owner)
+	imageID, imageErr := p.registerImages(ctx, owner)
+	if imageErr != nil {
+		return nil, imageErr
+	}
 	if err := p.send(map[string]any{"type": "prompt", "text": prompt, "image_id": imageID}); err != nil {
 		return nil, err
 	}
@@ -944,7 +947,10 @@ func SendCursorSDKInput(ctx context.Context, owner, message string) error {
 	p.acks[id] = ack
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.acks, id); p.mu.Unlock() }()
-	imageID := p.registerImages(ctx, owner)
+	imageID, imageErr := p.registerImages(ctx, owner)
+	if imageErr != nil {
+		return imageErr
+	}
 	if err := p.send(map[string]any{"type": "steer", "id": id, "text": message, "image_id": imageID}); err != nil {
 		return fmt.Errorf("%w: %v", llmtypes.ErrCodingAgentInputNotSent, err)
 	}

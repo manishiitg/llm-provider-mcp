@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"strings"
@@ -166,15 +167,15 @@ type cursorImageSource struct {
 	cancel context.CancelFunc
 }
 
-func (p *cursorSDKProcess) registerImages(ctx context.Context, owner string) string {
+func (p *cursorSDKProcess) registerImages(ctx context.Context, owner string) (string, error) {
 	inputs := llmtypes.ClaimNativeImageInputsForSession(ctx, owner)
 	if len(inputs) == 0 {
-		return ""
+		return "", nil
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.imageActive {
-		return ""
+		return "", fmt.Errorf("%w: Cursor turn ended before image registration", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	if p.images == nil {
 		p.images = map[string]*cursorImageSource{}
@@ -183,7 +184,7 @@ func (p *cursorSDKProcess) registerImages(ctx context.Context, owner string) str
 	_, _ = rand.Read(token)
 	id := hex.EncodeToString(token)
 	p.images[id] = &cursorImageSource{owner: owner, inputs: inputs}
-	return id
+	return id, nil
 }
 func (p *cursorSDKProcess) clearImages() {
 	p.mu.Lock()
