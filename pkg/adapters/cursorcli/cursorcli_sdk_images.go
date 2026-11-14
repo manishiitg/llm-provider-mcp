@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"strings"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -244,4 +245,37 @@ func (p *cursorSDKProcess) imageNotice(id string) {
 			input.Skipped("image_fetch_timeout_or_busy")
 		}
 	}
+}
+
+func cursorSDKImageContext(ctx context.Context, owner string, messages []llmtypes.MessageContent) context.Context {
+	if len(llmtypes.NativeImageInputsForSession(ctx, owner)) > 0 {
+		return ctx
+	}
+	var inputs []llmtypes.NativeImageInput
+	for _, message := range llmtypes.PendingHumanMessages(messages) {
+		for _, part := range message.Parts {
+			var image *llmtypes.ImageContent
+			switch v := part.(type) {
+			case llmtypes.ImageContent:
+				image = &v
+			case *llmtypes.ImageContent:
+				image = v
+			}
+			if image == nil {
+				continue
+			}
+			v := *image
+			inputs = append(inputs, llmtypes.NativeImageInput{Open: func(context.Context) (io.ReadCloser, string, int64, error) {
+				if v.SourceType != "base64" || len(v.Data) > base64.StdEncoding.EncodedLen(int(cursorImageMaxBytes))+4 {
+					return nil, "", 0, errors.New("invalid_image_content")
+				}
+				n, err := io.Copy(io.Discard, io.LimitReader(base64.NewDecoder(base64.StdEncoding, strings.NewReader(v.Data)), cursorImageMaxBytes+1))
+				if err != nil {
+					return nil, "", 0, err
+				}
+				return io.NopCloser(base64.NewDecoder(base64.StdEncoding, strings.NewReader(v.Data))), v.MediaType, n, nil
+			}})
+		}
+	}
+	return llmtypes.WithNativeImageInputs(ctx, owner, inputs)
 }
