@@ -45,13 +45,6 @@ func (p *PiCLIAdapter) GenerateContent(ctx context.Context, messages []llmtypes.
 		return nil, err
 	}
 
-	if containsPiImageContent(messages) {
-		if opts.StreamChan != nil {
-			close(opts.StreamChan)
-		}
-		return nil, fmt.Errorf("pi-cli does not support llmtypes.ImageContent directly; pass the image file path as text instead")
-	}
-
 	return p.generateContentRPC(ctx, messages, opts)
 }
 
@@ -152,18 +145,6 @@ func extractPiTextFromMessage(msg llmtypes.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
-}
-
-func containsPiImageContent(messages []llmtypes.MessageContent) bool {
-	for _, msg := range messages {
-		for _, part := range msg.Parts {
-			switch part.(type) {
-			case llmtypes.ImageContent, *llmtypes.ImageContent:
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (p *PiCLIAdapter) logInfof(format string, args ...interface{}) {

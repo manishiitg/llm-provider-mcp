@@ -48,13 +48,35 @@ type piRPC struct {
 func (r *piRPC) write(v any) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
+	if stream, ok := v.(piStreamingParams); ok {
+		err := stream.writeJSON(r.stdin)
+		if err == nil {
+			_, err = io.WriteString(r.stdin, "\n")
+		}
+		if err != nil {
+			r.finish(fmt.Errorf("Pi image request write failed"))
+		}
+		return err
+	}
 	return json.NewEncoder(r.stdin).Encode(v)
 }
 func (r *piRPC) call(ctx context.Context, command string, params map[string]any, result any) error {
+	return r.callPrepared(ctx, command, params, result)
+}
+func (r *piRPC) callPrepared(ctx context.Context, command string, params any, result any) error {
 	id := fmt.Sprintf("aw-%d", r.next.Add(1))
-	request := map[string]any{"id": id, "type": command}
-	for k, v := range params {
-		request[k] = v
+	base := map[string]any{"id": id, "type": command}
+	var request any = base
+	switch p := params.(type) {
+	case *piImageParams:
+		for k, v := range p.base {
+			base[k] = v
+		}
+		request = &piImageParams{base: base, images: p.images}
+	case map[string]any:
+		for k, v := range p {
+			base[k] = v
+		}
 	}
 	ch := make(chan piRPCRecord, 1)
 	r.mu.Lock()
@@ -69,8 +91,15 @@ func (r *piRPC) call(ctx context.Context, command string, params map[string]any,
 			return fmt.Errorf("Pi RPC %s: %w", command, err)
 		}
 	case <-ctx.Done():
+		if _, imageWrite := request.(*piImageParams); imageWrite {
+			r.finish(ctx.Err())
+			<-written
+		}
 		return ctx.Err()
 	case <-r.done:
+		if _, imageWrite := request.(*piImageParams); imageWrite {
+			<-written
+		}
 		return r.failure()
 	}
 	select {
@@ -113,11 +142,19 @@ func (r *piRPC) finish(err error) {
 	})
 }
 func (r *piRPC) read(stdout io.Reader) {
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
+	reader := bufio.NewReaderSize(stdout, 64*1024)
+	for {
+		raw, err := readPiImageSafeFrame(reader)
+		if err != nil {
+			if err != io.EOF {
+				r.finish(fmt.Errorf("read Pi RPC: %w", err))
+			} else {
+				r.finish(io.EOF)
+			}
+			return
+		}
 		var msg piRPCRecord
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		if err := json.Unmarshal(raw, &msg); err != nil {
 			r.finish(fmt.Errorf("invalid Pi RPC JSON: %w", err))
 			return
 		}
@@ -134,7 +171,7 @@ func (r *piRPC) read(stdout io.Reader) {
 			}
 			continue
 		}
-		msg.Raw = append(json.RawMessage(nil), scanner.Bytes()...)
+		msg.Raw = append(json.RawMessage(nil), raw...)
 		select {
 		case r.events <- msg:
 		case <-r.done:
@@ -144,10 +181,6 @@ func (r *piRPC) read(stdout io.Reader) {
 			return
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		r.finish(fmt.Errorf("read Pi RPC: %w", err))
-	} else {
-		r.finish(io.EOF)
-	}
 }
+
 func (r *piRPC) close() { r.finish(fmt.Errorf("Pi RPC closed")); <-r.exited }
