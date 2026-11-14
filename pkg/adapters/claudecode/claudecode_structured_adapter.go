@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/nativeinput"
 	"github.com/manishiitg/multi-llm-provider-go/pkg/adapters/internal/procshutdown"
@@ -42,14 +43,16 @@ type claudeStreamEvent struct {
 		Background int  `json:"background"`
 		Helpers    bool `json:"helpers"`
 	} `json:"sdk_hold,omitempty"`
-	InputNotSent bool            `json:"input_not_sent,omitempty"`
-	ControlID    string          `json:"id,omitempty"`
-	Errors       []string        `json:"errors,omitempty"`
-	RequestID    string          `json:"request_id,omitempty"`
-	ToolName     string          `json:"tool_name,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	Suggestions  json.RawMessage `json:"suggestions,omitempty"`
-	Event        *struct {
+	InputNotSent bool     `json:"input_not_sent,omitempty"`
+	ControlID    string   `json:"id,omitempty"`
+	Errors       []string `json:"errors,omitempty"`
+	// TerminalReason is why the SDK ended the turn (prompt_too_long, blocking_limit, aborted_tools, ...).
+	TerminalReason string          `json:"terminal_reason,omitempty"`
+	RequestID      string          `json:"request_id,omitempty"`
+	ToolName       string          `json:"tool_name,omitempty"`
+	Input          json.RawMessage `json:"input,omitempty"`
+	Suggestions    json.RawMessage `json:"suggestions,omitempty"`
+	Event          *struct {
 		Type         string                    `json:"type"`
 		Index        int                       `json:"index"`
 		Message      *claudeStreamMessage      `json:"message,omitempty"`
@@ -537,6 +540,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	var fallbackCacheReadTokens, fallbackCacheWriteTokens int
 	sawResult := false
 	resultIsError := false
+	terminalReason := ""
 	// pendingToolCalls correlates a ToolCallEnd back to its Start: the name
 	// and args are only present on the tool_use block (an "assistant" event),
 	// while the completion is a SEPARATE later "user" event carrying only the
@@ -763,6 +767,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				emitLiveUsage(true)
 				sawResult = true
 				resultIsError = ev.IsError
+				terminalReason = ev.TerminalReason
 				for _, line := range append([]string{ev.Result}, ev.Errors...) {
 					if isClaudeDiagnosticResult(line) {
 						c.logger.Infof("[CLAUDE_SDK] dropped diagnostic result: %s", strings.TrimSpace(line))
@@ -867,6 +872,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if resultIsError && sdkProcess != nil && sdkProcess.interrupted.Load() {
 		// A turn the person stopped is a stop, not a failure (PLAT-872-65).
 		return nil, fmt.Errorf("Claude turn stopped by the person: %w", context.Canceled)
+	}
+	if claudeAbortedTerminalReason(terminalReason) {
+		// An explicit abort overrides a success envelope: the turn was interrupted, not answered.
+		c.logger.Infof("[CLAUDE_SDK] session=%s ended interrupted terminal_reason=%s", sessionID, terminalReason)
+		return nil, fmt.Errorf("Claude turn was interrupted: %w", context.Canceled)
+	}
+	if claudeContextFullTerminalReason(terminalReason) && (resultIsError || strings.TrimSpace(answerText) == "") && !IsClaudeUsageLimitText(resultText) {
+		// blocking_limit also means a rate limit; usage-limit text takes the branch below.
+		c.logger.Infof("[CLAUDE_SDK] session=%s ended terminal_reason=%s: conversation too long", sessionID, terminalReason)
+		return nil, &llmerrors.Error{Kind: llmerrors.KindContextTooLong, Provider: "claude-code", Model: c.modelID,
+			Err: fmt.Errorf("This conversation is too long for the model. Compact it or start a new chat.")}
 	}
 	if resultIsError {
 		msg := strings.TrimSpace(resultText)
@@ -1115,4 +1131,12 @@ func claudeUnshownSummary(counts map[string]int) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, " ")
+}
+
+func claudeAbortedTerminalReason(reason string) bool {
+	return reason == "aborted_tools" || reason == "aborted_streaming"
+}
+
+func claudeContextFullTerminalReason(reason string) bool {
+	return reason == "prompt_too_long" || reason == "blocking_limit"
 }
