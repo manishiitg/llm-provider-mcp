@@ -57,3 +57,21 @@ func TestProviderDisplayFailureActions(t *testing.T) {
 		})
 	}
 }
+
+// PLAT-746-987: native failures keep useful account actions without leaking model credentials.
+func TestNativeProviderFailuresHaveSpecificActionsAndMaskedModels(t *testing.T) {
+	reset := time.Date(2030, 1, 2, 1, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		failure         *Error
+		message, action string
+	}{
+		{&Error{Provider: "agy-cli", Kind: KindQuotaExhausted, RetryAt: reset, Err: errors.New("quota")}, "Antigravity quota", "2030-01-02T01:00:00Z"},
+		{&Error{Provider: "pi-cli", Kind: KindAuth, Err: errors.New("API_KEY=private-value")}, "not signed in", "/login"},
+		{&Error{Provider: "agy-cli", Kind: KindModelNotFound, Model: "model API_KEY=private-value", Err: errors.New("missing")}, "not available for this account", "Pick another model"},
+	} {
+		display := ProviderDisplay(tc.failure)
+		if !strings.Contains(display.Message, tc.message) || !strings.Contains(display.NextStep, tc.action) || strings.Contains(display.Message+display.NextStep, "private-value") {
+			t.Fatalf("unhelpful or unsafe display: %+v", display)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -108,7 +109,7 @@ func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *p
 		select {
 		case reply := <-accepted:
 			if reply.Err != nil {
-				return nil, reply.Err
+				return nil, piRPCRequestFailure(s.model, s.nativeID, reply.Err, false)
 			}
 			emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypePromptAccepted, Metadata: piRPCMetadata(s)})
 			if reply.Disposition == "handled" {
@@ -132,6 +133,49 @@ func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *p
 			lastEvent = time.Now()
 			event := record.piJSONEvent
 			switch record.Type {
+			case "auto_retry_start", "auto_retry_end":
+				var retry struct {
+					Attempt     int    `json:"attempt"`
+					MaxAttempts int    `json:"maxAttempts"`
+					DelayMS     int64  `json:"delayMs"`
+					Success     bool   `json:"success"`
+					FinalError  string `json:"finalError"`
+				}
+				if json.Unmarshal(record.Raw, &retry) != nil {
+					continue
+				}
+				phase := "start"
+				if event.Type == "auto_retry_end" {
+					phase = "end"
+				}
+				if retry.Attempt < 1 {
+					retry.Attempt = 1
+				}
+				if retry.MaxAttempts < retry.Attempt {
+					retry.MaxAttempts = retry.Attempt
+				}
+				if retry.DelayMS < 0 {
+					retry.DelayMS = 0
+				}
+				metadata := piRPCMetadata(s)
+				native := &llmtypes.NativeRetry{Provider: "pi-cli", NativeSessionID: s.nativeID, Phase: phase, Attempt: retry.Attempt, MaxAttempts: retry.MaxAttempts, DelayMS: retry.DelayMS, Success: retry.Success}
+				native.NativeTurnID, _ = metadata["pi_turn_id"].(string)
+				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeNativeRetry, NativeRetry: native, Metadata: metadata})
+				log.Printf("[PI_RETRY] session=%s turn=%s phase=%s attempt=%d max=%d delay_ms=%d success=%t", native.NativeSessionID, native.NativeTurnID, phase, retry.Attempt, retry.MaxAttempts, retry.DelayMS, retry.Success)
+				if phase == "end" {
+					if retry.Success {
+						if stopReason == "error" {
+							stopReason = ""
+						}
+						modelError = ""
+					} else {
+						stopReason = "error"
+						modelError = retry.FinalError
+						if modelError == "" {
+							modelError = "Pi could not recover after retrying the provider request."
+						}
+					}
+				}
 			case "extension_ui_request":
 				var request struct {
 					Method string `json:"method"`
@@ -250,7 +294,7 @@ func (p *PiCLIAdapter) consumeRPCTurn(ctx context.Context, s *piRPCSession, r *p
 					return nil, errPiRPCAborted
 				}
 				if stopReason == "error" {
-					return nil, fmt.Errorf("Pi model request failed: %s", modelError)
+					return nil, piRPCRequestFailure(s.model, s.nativeID, fmt.Errorf("Pi model request failed: %s", modelError), true)
 				}
 				if len(calls) > 0 {
 					return nil, fmt.Errorf("Pi settled with incomplete tool calls")

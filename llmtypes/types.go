@@ -138,6 +138,7 @@ type StatusLineProvider interface {
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
+	NativeRetry     *NativeRetry      // Status of the native CLI’s own retry loop.
 	NativeGoal      *NativeGoalUpdate // Private goal state, never a token/account status snapshot.
 	CodingAgentPlan *CodingAgentPlan  // Full provider-authored checklist snapshot.
 	Type            StreamChunkType   // Type of chunk: "content", "reasoning", "tool_call", "terminal", or "status_line"
