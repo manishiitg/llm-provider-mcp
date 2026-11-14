@@ -190,6 +190,12 @@ func TestCodexNativeImagesFollowPendingHumanMessages(t *testing.T) {
 			if ok != tc.want {
 				t.Fatal("image selection diverged from pending text")
 			}
+			if !tc.want {
+				_, err := (&CodexCLIAdapter{}).generateContentAppServer(context.Background(), tc.messages, &llmtypes.CallOptions{})
+				if err == nil || !strings.Contains(err.Error(), "prompt is empty") {
+					t.Fatal("answered image started an empty native turn", err)
+				}
+			}
 			if ok {
 				var wire bytes.Buffer
 				if err = images.writeJSON(&wire); err != nil {
