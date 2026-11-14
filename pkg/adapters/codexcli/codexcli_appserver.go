@@ -33,6 +33,7 @@ type codexAppSession struct {
 	threadID, turnID, cwd, model string
 	fingerprint                  [32]byte
 	processFingerprint           [32]byte
+	processEnvParts              map[string][32]byte
 	fingerprintParts             map[string][32]byte
 	fingerprintCustom            map[string][32]byte
 	status                       *llmtypes.StatusLine
@@ -136,7 +137,7 @@ var startCodexAppServer = func(c *CodexCLIAdapter, ctx context.Context, opts *ll
 
 // The child retains its executable/account/environment and OS sandbox. Thread
 // instructions, MCP servers and Codex-level modes can be refreshed over RPC.
-func (c *CodexCLIAdapter) appProcessFingerprint(opts *llmtypes.CallOptions, cwd string) ([32]byte, error) {
+func (c *CodexCLIAdapter) appProcessFingerprint(opts *llmtypes.CallOptions, cwd string, environment map[string]string) ([32]byte, error) {
 	bin, err := exec.LookPath("codex")
 	if err != nil {
 		return [32]byte{}, err
@@ -153,7 +154,7 @@ func (c *CodexCLIAdapter) appProcessFingerprint(opts *llmtypes.CallOptions, cwd 
 	if opts.CLISecurity != nil && opts.CLISecurity.Confined() {
 		sandboxCWD = cwd
 	}
-	raw, err := json.Marshal(map[string]any{"sandbox_cwd": sandboxCWD, "binary": bin, "size": info.Size(), "mtime": info.ModTime().UnixNano(), "argv": codexAppLaunchArgs(opts), "security": opts.CLISecurity, "mcp_reads": reads, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)})
+	raw, err := json.Marshal(map[string]any{"sandbox_cwd": sandboxCWD, "binary": bin, "size": info.Size(), "mtime": info.ModTime().UnixNano(), "argv": codexAppLaunchArgs(opts), "security": opts.CLISecurity, "mcp_reads": reads, "env": environment})
 	if err != nil {
 		return [32]byte{}, err
 	}
@@ -337,7 +338,17 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		return nil, err
 	}
 	fingerprint := sha256.Sum256(raw)
-	processFingerprint, err := c.appProcessFingerprint(opts, cwd)
+	environment := map[string]string{}
+	for _, entry := range llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts) {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			environment[key] = value
+		}
+	}
+	envParts := map[string][32]byte{}
+	for key, value := range environment {
+		envParts[key] = sha256.Sum256([]byte(value))
+	}
+	processFingerprint, err := c.appProcessFingerprint(opts, cwd, environment)
 	if err != nil {
 		return nil, err
 	}
@@ -348,6 +359,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	thread := s.threadID
 	oldFingerprint := s.fingerprint
 	oldProcessFingerprint := s.processFingerprint
+	oldEnvParts := s.processEnvParts
 	oldParts := s.fingerprintParts
 	oldCustomParts := s.fingerprintCustom
 	s.mu.Unlock()
@@ -366,6 +378,9 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	}
 	if r != nil && oldProcessFingerprint != processFingerprint {
 		reason = "process_config_changed"
+		if c.logger != nil {
+			c.logger.Infof("[CODEX_WARM] owner=%s action=process_restart reason=process_config_changed env_keys=%s", owner, codexCustomFingerprintChanges(oldEnvParts, envParts))
+		}
 		r.close()
 		r = nil
 	}
@@ -461,6 +476,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		s.model = result.Model
 		s.fingerprint = fingerprint
 		s.processFingerprint = processFingerprint
+		s.processEnvParts = envParts
 		s.fingerprintParts = parts
 		s.fingerprintCustom = customParts
 		s.status = nil

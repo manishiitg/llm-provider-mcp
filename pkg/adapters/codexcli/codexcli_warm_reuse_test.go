@@ -89,6 +89,16 @@ func TestCodexWarmConfigRefreshResumesThreadWithoutRelaunch(t *testing.T) {
 	if servers["api-bridge"].(map[string]any)["url"] != "https://example.com/two" {
 		t.Fatal("thread resumed with stale MCP config")
 	}
+	// Bridge credentials belong to thread configuration, not the child env.
+	WithMCPServers(`{"api-bridge":{"url":"https://example.com/two","env":{"MCP_API_TOKEN":"renewed-bridge-token"}}}`)(opts)
+	run("trusted second")
+	if launches != 1 || len(loads) != 3 {
+		t.Fatal("bridge token renewal relaunched the process")
+	}
+	renewed := loads[2]["config"].(map[string]any)["mcp_servers"].(map[string]any)["api-bridge"].(map[string]any)["env"].(map[string]any)
+	if renewed["MCP_API_TOKEN"] != "renewed-bridge-token" {
+		t.Fatal("renewed bridge token was not passed to thread/resume")
+	}
 	adapter.apiKey = "account-two"
 	run("trusted second")
 	if launches != 2 {
