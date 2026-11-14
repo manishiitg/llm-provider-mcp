@@ -150,6 +150,7 @@ async function main() {
   let run, wake, ended = false, keepWarm = false;
   let nextPromptCapable = false, nextPromptTurn = '', settledPromptTurn = '';
   let suggestionNearLimit = false;
+  const suggestionWindows = new Map();
   const helpers = createHelperTracker(emit, true);
   // movedAside: background tasks that appeared while a steer was waiting to be taken, i.e. work a steer moved aside.
   // ownBackground: tool calls Claude itself started with run_in_background (a dev server, a long build). Those
@@ -281,7 +282,9 @@ async function main() {
     for await (const event of run) {
       if (event.type === 'rate_limit_event') {
         const limit = event.rate_limit_info || {};
-        suggestionNearLimit = limit.status === 'rejected' || limit.utilization >= 0.9 || Object.values(limit.unifiedWindows || {}).some(window => window.utilization >= 0.9);
+        if (typeof limit.utilization === 'number') suggestionWindows.set(limit.rateLimitType || 'primary', { used:limit.utilization, resets:limit.resetsAt });
+        for (const [name, window] of Object.entries(limit.unifiedWindows || {})) if (typeof window.utilization === 'number') suggestionWindows.set(name, {used:window.utilization, resets:window.resetsAt});
+        suggestionNearLimit = limit.status === 'rejected' || [...suggestionWindows.values()].some(window => window.used >= 0.9 && (!window.resets || window.resets * 1000 > Date.now()));
         if (suggestionNearLimit && nextPromptCapable && typeof run.applyFlagSettings === 'function') {
           await run.applyFlagSettings({ promptSuggestionEnabled:false });
           emit({type:'sdk_prompt_skipped', sdk_prompt_turn:nextPromptTurn, prompt_skip_reason:'near_limit'});
