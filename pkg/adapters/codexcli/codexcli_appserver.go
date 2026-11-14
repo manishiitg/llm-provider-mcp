@@ -513,9 +513,6 @@ func codexAppResponse(s *codexAppSession, content string, usage codexAppUsage) *
 			info.Additional[key] = value
 		}
 	}
-	if s.goal != nil {
-		info.Additional["native_goal"] = s.goal
-	}
 	if windows := codexStructuredRateLimitWindows(s.rateLimits); len(windows) > 0 {
 		info.Additional[llmtypes.RateLimitWindowsMetaKey] = windows
 	}
