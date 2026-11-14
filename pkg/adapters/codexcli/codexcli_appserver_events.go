@@ -109,6 +109,11 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 				if pauseErr != nil {
 					return nil, pauseErr
 				}
+				// A native turn can start while the pause RPC is in flight.
+				// End this process before releasing ownership; the paused
+				// native thread can reopen normally on the next input.
+				r.close()
+				log.Printf("[AGENT_GOAL] session=%s native=%s action=done status=paused reason=native_gap_process_closed", s.owner, thread)
 				completed = true
 				return codexAppResponse(s, joined(), usage), nil
 			}

@@ -181,10 +181,15 @@ func TestCodexGoalStopAndNativeContinuationGapPauseTheOwnedThread(t *testing.T) 
 	previous := codexGoalFollowupWait
 	codexGoalFollowupWait = 20 * time.Millisecond
 	defer func() { codexGoalFollowupWait = previous }()
-	for _, scenario := range []string{"native_gap", "stop"} {
+	for _, scenario := range []string{"native_gap", "native_gap_late_start", "stop"} {
 		t.Run(scenario, func(t *testing.T) {
-			rpc, wire := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+			var rpc *codexRPC
+			var wire *goalRPCWriter
+			rpc, wire = goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
 				if request.Method == "thread/goal/set" {
+					if scenario == "native_gap_late_start" {
+						rpc.events <- codexRPCMessage{Method: "turn/started", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"late","status":"inProgress"}}`)}
+					}
 					return codexRPCMessage{Result: goalWire("paused")}
 				}
 				return codexRPCMessage{Result: json.RawMessage(`{}`)}
@@ -198,7 +203,7 @@ func TestCodexGoalStopAndNativeContinuationGapPauseTheOwnedThread(t *testing.T) 
 				rpc.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"turn","status":"completed"}}`)}
 			}
 			_, err := (&CodexCLIAdapter{}).consumeAppTurn(ctx, session, rpc, "thread", "turn", func(llmtypes.StreamChunk) {})
-			if scenario == "native_gap" && err != nil {
+			if scenario != "stop" && err != nil {
 				t.Fatal(err)
 			}
 			if scenario == "stop" && !errors.Is(err, context.Canceled) {
@@ -228,6 +233,12 @@ func TestCodexGoalStopAndNativeContinuationGapPauseTheOwnedThread(t *testing.T) 
 			}
 			if !paused {
 				t.Fatal("native pause command missing")
+			}
+			// PR166: a continuation racing the pause cannot outlive ownership.
+			select {
+			case <-rpc.done:
+			default:
+				t.Fatal("native gap/Stop left an unobserved process running")
 			}
 		})
 	}
