@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"strings"
@@ -122,7 +121,7 @@ func (p *codexImageParams) close() {
 // written. Only prepared file handles remain open, never decoded pixels. A
 // preparation refusal cannot corrupt framing or interrupt an unrelated turn.
 func codexParamsWithImages(ctx context.Context, owner string, base map[string]any, messages []llmtypes.MessageContent) (any, func(), error) {
-	inputs := llmtypes.NativeImageInputsForSession(ctx, owner)
+	inputs := llmtypes.ClaimNativeImageInputsForSession(ctx, owner)
 	if len(inputs) == 0 {
 		// Direct library callers may supply base64 in the latest human message.
 		// The app uses admitted factories instead, so no image is saved in history.
@@ -164,44 +163,44 @@ func codexParamsWithImages(ctx context.Context, owner string, base map[string]an
 	}
 	p := &codexImageParams{base: base}
 	var total int64
-	fail := func(reason string) (any, func(), error) {
-		p.close()
-		log.Printf("[CHAT_IMAGE] session=%s provider=codex-cli images=%d bytes=%d native=false action=failed reason=%s", owner, len(inputs), total, reason)
-		return nil, func() {}, fmt.Errorf("native image delivery: %s", reason)
-	}
-	if len(inputs) > 16 {
-		return fail("image_count")
+	skip := func(input llmtypes.NativeImageInput, reason string) {
+		log.Printf("[CHAT_IMAGE] session=%s provider=codex-cli images=1 bytes=0 native=false action=skipped reason=%s", owner, reason)
+		if input.Skipped != nil {
+			input.Skipped(reason)
+		}
 	}
 	for _, input := range inputs {
 		if err := ctx.Err(); err != nil {
-			return fail("canceled")
+			p.close()
+			return nil, func() {}, err
+		}
+		if len(p.images) >= 16 {
+			skip(input, "image_count")
+			continue
 		}
 		if input.Open == nil {
-			return fail("image_unavailable")
+			skip(input, "image_unavailable")
+			continue
 		}
 		reader, mime, n, err := input.Open(ctx)
-		if err != nil {
+		if err != nil || reader == nil {
 			if reader != nil {
 				_ = reader.Close()
 			}
-			return fail("image_unavailable")
+			skip(input, "image_unavailable")
+			continue
 		}
-		if reader == nil {
-			return fail("image_unavailable")
+		validMime := mime == "image/png" || mime == "image/jpeg" || mime == "image/webp" || mime == "image/gif"
+		if !validMime || n <= 0 || n > codexImageMaxBytes || total+n > codexTurnImageMaxBytes {
+			_ = reader.Close()
+			skip(input, "image_limit")
+			continue
 		}
 		p.images = append(p.images, codexPreparedImage{reader: reader, mime: mime, bytes: n})
-		switch mime {
-		case "image/png", "image/jpeg", "image/webp", "image/gif":
-		default:
-			return fail("image_format")
-		}
-		if n <= 0 || n > codexImageMaxBytes {
-			return fail("image_size")
-		}
 		total += n
-		if total > codexTurnImageMaxBytes {
-			return fail("turn_image_size")
-		}
+	}
+	if len(p.images) == 0 {
+		return base, func() {}, nil
 	}
 	log.Printf("[CHAT_IMAGE] session=%s provider=codex-cli images=%d bytes=%d native=true action=started", owner, len(inputs), total)
 	return p, func() { p.close() }, nil
