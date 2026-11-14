@@ -3,13 +3,16 @@ package musecli
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,13 +23,16 @@ import (
 // ends right after the steer arrives; with rejectSteer the steer's rejection
 // row reaches the journal only after turn/completed, as seen live.
 type fakeMuseHost struct {
-	t           *testing.T
-	journal     string
-	rejectSteer bool
-	in          *bufio.Scanner
-	out         io.Writer
-	mu          sync.Mutex
-	starts      []string
+	t              *testing.T
+	journal        string
+	rejectSteer    bool
+	in             *bufio.Scanner
+	out            io.Writer
+	mu             sync.Mutex
+	starts         []string
+	imageCounts    []int
+	badImage       bool
+	metadataEchoes int
 }
 
 func (h *fakeMuseHost) send(v any) {
@@ -49,12 +55,37 @@ func (h *fakeMuseHost) serve() {
 			Params struct {
 				CommandID string `json:"commandId"`
 				Input     []struct {
-					Text string `json:"text"`
+					Text       string `json:"text"`
+					Type       string `json:"type"`
+					Base64Data string `json:"base64Data"`
+					MediaType  string `json:"mediaType"`
 				} `json:"input"`
 			} `json:"params"`
 		}
 		if json.Unmarshal(h.in.Bytes(), &req) != nil {
 			continue
+		}
+		images := 0
+		for _, part := range req.Params.Input {
+			if part.Type == "image" {
+				images++
+				decoded, err := base64.StdEncoding.DecodeString(part.Base64Data)
+				if err != nil || string(decoded) != "image-pixels" || part.MediaType != "image/png" {
+					h.mu.Lock()
+					h.badImage = true
+					h.mu.Unlock()
+				}
+			}
+		}
+		h.mu.Lock()
+		h.imageCounts = append(h.imageCounts, images)
+		h.mu.Unlock()
+		if images > 0 {
+			// Muse1.4.20 MSP views echo attachment metadata only, never base64.
+			h.send(map[string]any{"method": "item/completed", "params": map[string]any{"item": map[string]any{"kind": "userMessage", "itemId": "image-input", "attachments": []map[string]any{{"attachmentId": "one", "type": "image", "mediaType": "image/png", "width": 2, "height": 2}}}}})
+			h.mu.Lock()
+			h.metadataEchoes++
+			h.mu.Unlock()
 		}
 		switch req.Method {
 		case "turn/start":
@@ -79,6 +110,11 @@ func (h *fakeMuseHost) serve() {
 					h.t.Errorf("journal: %v", err)
 					continue
 				}
+				// A large unrelated native input row must not hide the following
+				// text-only rejection receipt (former32MiB scanner failure).
+				_, _ = f.WriteString(`{"payload":{"input":"`)
+				_, _ = io.CopyN(f, museRepeatedByte('A'), 33<<20)
+				_, _ = f.WriteString("\"}}\n")
 				_, _ = f.WriteString(row)
 				_ = f.Close()
 			}
@@ -96,9 +132,12 @@ func TestMuseMSPSteerRejectedAtTurnEndRunsOnceAsNextTurn(t *testing.T) {
 		reject     bool
 		wantStarts []string
 		wantAnswer string
+		revoke     bool
+		wantImages []int
 	}{
-		{"rejected after the turn ended", true, []string{"first prompt", "late message"}, "first answer\n\nanswer to the steer"},
-		{"read by the turn", false, []string{"first prompt"}, "first answer"},
+		{"rejected after the turn ended", true, []string{"first prompt", "late message"}, "first answer\n\nanswer to the steer", false, []int{1, 1, 1}},
+		{"read by the turn", false, []string{"first prompt"}, "first answer", false, []int{1, 1}},
+		{"rejected and access revoked", true, []string{"first prompt", "late message"}, "first answer\n\nanswer to the steer", true, []int{1, 1, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wait := museMSPSteerVerdictWait
@@ -137,6 +176,17 @@ func TestMuseMSPSteerRejectedAtTurnEndRunsOnceAsNextTurn(t *testing.T) {
 			a := &MuseCLIAdapter{}
 			go a.pumpMuseMSP(s)
 
+			var opened, closed, skipped atomic.Int32
+			input := llmtypes.NativeImageInput{Open: func(context.Context) (io.ReadCloser, string, int64, error) {
+				n := opened.Add(1)
+				if tc.revoke && n >= 3 {
+					return nil, "", 0, errors.New("access revoked")
+				}
+				return &museTestImageReader{Reader: strings.NewReader("image-pixels"), closed: &closed}, "image/png", 12, nil
+			}, Skipped: func(string) { skipped.Add(1) }}
+			withImage := func() context.Context {
+				return llmtypes.WithNativeImageInputs(context.Background(), owner, []llmtypes.NativeImageInput{input})
+			}
 			steerErr := make(chan error, 1)
 			go func() {
 				for {
@@ -144,14 +194,14 @@ func TestMuseMSPSteerRejectedAtTurnEndRunsOnceAsNextTurn(t *testing.T) {
 					running := s.turnID != ""
 					s.mu.Unlock()
 					if running {
-						steerErr <- SendMuseMSPInput(context.Background(), owner, "late message")
+						steerErr <- SendMuseMSPInput(withImage(), owner, "late message")
 						return
 					}
 					time.Sleep(time.Millisecond)
 				}
 			}()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(withImage(), 10*time.Second)
 			defer cancel()
 			params := map[string]any{"commandId": museCommandID(), "sessionId": "native-1", "input": []map[string]any{{"type": "text", "text": "first prompt"}}}
 			resp, err := a.runMuseMSPTurns(ctx, s, owner, params, false, &llmtypes.CallOptions{}, func(llmtypes.StreamChunk) {})
@@ -163,7 +213,30 @@ func TestMuseMSPSteerRejectedAtTurnEndRunsOnceAsNextTurn(t *testing.T) {
 			}
 			host.mu.Lock()
 			starts := append([]string(nil), host.starts...)
+			counts := append([]int(nil), host.imageCounts...)
+			bad := host.badImage
+			echoes := host.metadataEchoes
 			host.mu.Unlock()
+			if fmt.Sprint(counts) != fmt.Sprint(tc.wantImages) || bad || echoes < 2 {
+				t.Fatalf("native images/metadata echoes: counts=%v bad=%t echoes=%d", counts, bad, echoes)
+			}
+			wantOpen := int32(2)
+			wantClosed := int32(2)
+			if tc.reject {
+				wantOpen = 3
+				if !tc.revoke {
+					wantClosed = 3
+				}
+			}
+			if opened.Load() != wantOpen || closed.Load() != wantClosed || tc.revoke != (skipped.Load() > 0) {
+				t.Fatalf("factory recovery/resource counts opened=%d closed=%d skipped=%d", opened.Load(), closed.Load(), skipped.Load())
+			}
+			// Retrying this original context cannot attach its answered image.
+			retry, retryClose, retryErr := museParamsWithImages(ctx, owner, params, nil)
+			retryClose()
+			if _, image := retry.(*museImageParams); retryErr != nil || image {
+				t.Fatal("answered image replayed", retryErr)
+			}
 			if strings.Join(starts, "|") != strings.Join(tc.wantStarts, "|") {
 				t.Fatalf("turns started = %q, want %q", starts, tc.wantStarts)
 			}
@@ -178,4 +251,20 @@ func TestMuseMSPSteerRejectedAtTurnEndRunsOnceAsNextTurn(t *testing.T) {
 			}
 		})
 	}
+}
+
+type museTestImageReader struct {
+	io.Reader
+	closed *atomic.Int32
+}
+
+func (r *museTestImageReader) Close() error { r.closed.Add(1); return nil }
+
+type museRepeatedByte byte
+
+func (r museRepeatedByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(r)
+	}
+	return len(p), nil
 }

@@ -512,7 +512,8 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	if llmtypes.CodingProviderIdleCompactFromOptions(opts) {
 		return a.compactMuseMSP(ctx, s, emit)
 	}
-	prompt, err := museBuildExecPrompt(messages, resumeID != "")
+	system, human, err := museMSPPrompt(ctx, owner, messages, resumeID != "")
+	prompt := museInlinePrompt(system, human)
 	if err != nil {
 		return nil, err
 	}
@@ -521,7 +522,7 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	handoff := s.handoffPending
 	if handoff {
 		// The first turn after a transfer restates the current instructions.
-		system, human, splitErr := museSplitPrompt(messages)
+		system, human, splitErr := museMSPPrompt(ctx, owner, messages, true)
 		if splitErr != nil {
 			return nil, splitErr
 		}
@@ -530,7 +531,11 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	if skills := llmtypes.AttachedSkillsFromOptions(opts); len(skills) > 0 {
 		_ = a.ProjectSkills(llmtypes.CLIArtifactDirectory(opts, workdir), skills)
 	}
-	params := map[string]any{"commandId": museCommandID(), "sessionId": s.sessionID, "input": []map[string]any{{"type": "text", "text": prompt}}}
+	input := []map[string]any{}
+	if prompt != "" {
+		input = append(input, map[string]any{"type": "text", "text": prompt})
+	}
+	params := map[string]any{"commandId": museCommandID(), "sessionId": s.sessionID, "input": input}
 	if effort, effortErr := museExecEffort(opts); effortErr != nil {
 		return nil, effortErr
 	} else if effort != "" {
@@ -539,22 +544,34 @@ func (a *MuseCLIAdapter) generateContentMSP(ctx context.Context, messages []llmt
 	if len(s.roots) > 0 {
 		params["workspaceRoots"] = s.roots
 	}
-	return a.runMuseMSPTurns(ctx, s, owner, params, handoff, opts, emit)
+	return a.runMuseMSPTurns(ctx, s, owner, params, handoff, opts, emit, messages)
 }
 
 // runMuseMSPTurns runs the turn in params, then one more for any message that
 // turn was given and never read. The caller's Run stays open across them, so
 // the message is answered inside the same completion that a steer read in time
 // would have been.
-func (a *MuseCLIAdapter) runMuseMSPTurns(ctx context.Context, s *museMSPSession, owner string, params map[string]any, handoff bool, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+func (a *MuseCLIAdapter) runMuseMSPTurns(ctx context.Context, s *museMSPSession, owner string, params map[string]any, handoff bool, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk), messages ...[]llmtypes.MessageContent) (*llmtypes.ContentResponse, error) {
 	events := s.listen()
 	defer s.stopListening()
 	totals := &museMSPTurnTotals{}
+	var imageMessages []llmtypes.MessageContent
+	if len(messages) > 0 {
+		imageMessages = messages[0]
+	}
 	for {
 		var started struct {
 			TurnID string `json:"turnId"`
 		}
-		if err := s.rpc.call(ctx, "turn/start", params, &started); err != nil {
+		nativeParams, closeImages, prepErr := museParamsWithImages(ctx, owner, params, imageMessages)
+		imageMessages = nil
+		if prepErr != nil {
+			return nil, prepErr
+		}
+		err := s.rpc.call(ctx, "turn/start", nativeParams, &started)
+		finishMuseImageDelivery(owner, nativeParams, err)
+		closeImages()
+		if err != nil {
 			CloseMuseMSPSession(owner)
 			return nil, err
 		}
@@ -591,7 +608,14 @@ func (a *MuseCLIAdapter) runMuseMSPTurns(ctx context.Context, s *museMSPSession,
 		log.Printf("[MUSE_MSP] steer handover session=%s owner=%s finished_turn=%s missed=%d: the turn ended before reading them, running them as the next turn", s.sessionID, owner, started.TurnID, len(missed))
 		totals.followups++
 		params["commandId"] = museCommandID()
-		params["input"] = []map[string]any{{"type": "text", "text": strings.Join(missed, "\n\n")}}
+		var text []string
+		var images []llmtypes.NativeImageInput
+		for _, steer := range missed {
+			text = append(text, steer.message)
+			images = append(images, steer.images...)
+		}
+		params["input"] = []map[string]any{{"type": "text", "text": strings.Join(text, "\n\n")}}
+		ctx = llmtypes.WithNativeImageInputs(ctx, owner, images)
 	}
 }
 

@@ -393,10 +393,21 @@ func (a *MuseCLIAdapter) compactMuseMSP(ctx context.Context, s *museMSPSession, 
 // SendMuseMSPInput adds a message to the chat's running turn (turn/steer). The
 // host's answer does not prove the turn will read it: runMuseMSPTurns checks
 // that when the turn ends.
-func SendMuseMSPInput(ctx context.Context, owner, message string) error {
+func SendMuseMSPInput(ctx context.Context, owner, message string) (err error) {
 	s := museMSPSessionFor(owner)
 	if s == nil {
-		return fmt.Errorf("no Muse serve session for %s", owner)
+		return fmt.Errorf("%w: no Muse serve session", llmtypes.ErrCodingAgentInputNotSent)
+	}
+	base := map[string]any{"input": []map[string]any{{"type": "text", "text": message}}}
+	params, closeImages, err := museParamsWithImages(ctx, owner, base, nil)
+	if err != nil {
+		return fmt.Errorf("%w: image preparation did not complete", llmtypes.ErrCodingAgentInputNotSent)
+	}
+	defer closeImages()
+	defer func() { finishMuseImageDelivery(owner, params, err) }()
+	// Decode/access checks can outlive a turn: use only the current native ID.
+	if museMSPSessionFor(owner) != s {
+		return fmt.Errorf("%w: Muse session changed", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	s.mu.Lock()
 	turnID, sessionID := s.turnID, s.sessionID
@@ -404,9 +415,21 @@ func SendMuseMSPInput(ctx context.Context, owner, message string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: no Muse turn is running", llmtypes.ErrCodingAgentInputNotSent)
 	}
+	select {
+	case <-s.rpc.done:
+		s.mu.Unlock()
+		return fmt.Errorf("%w: Muse process ended", llmtypes.ErrCodingAgentInputNotSent)
+	default:
+	}
 	steer := s.addSteerLocked(message)
+	if imageParams, ok := params.(*museImageParams); ok {
+		steer.images = append([]llmtypes.NativeImageInput(nil), imageParams.sources...)
+	}
 	s.mu.Unlock()
-	err := s.rpc.call(ctx, "turn/steer", map[string]any{"commandId": steer.commandID, "sessionId": sessionID, "expectedTurnId": turnID, "input": []map[string]any{{"type": "text", "text": message}}}, nil)
+	base["commandId"] = steer.commandID
+	base["sessionId"] = sessionID
+	base["expectedTurnId"] = turnID
+	err = s.rpc.call(ctx, "turn/steer", params, nil)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.finishSteerLocked(steer, err == nil)

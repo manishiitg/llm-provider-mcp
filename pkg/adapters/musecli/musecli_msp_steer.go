@@ -2,9 +2,11 @@ package musecli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 	"io"
 	"log"
 	"os"
@@ -33,6 +35,7 @@ const museMSPSteerPoll = 50 * time.Millisecond
 type museMSPSteer struct {
 	commandID string
 	message   string
+	images    []llmtypes.NativeImageInput
 	answered  bool
 	// offset is the journal's size before the send: its verdict lies past it.
 	offset int64
@@ -84,7 +87,7 @@ func (s *museMSPSession) clearSteers() {
 // and Muse rejected. Only that rejection counts: a steer with none was read by
 // the turn, and running it again would answer it twice. Host events arriving
 // meanwhile are handled as between turns.
-func (a *MuseCLIAdapter) museMSPMissedSteers(ctx context.Context, s *museMSPSession, events <-chan museRPCMessage) []string {
+func (a *MuseCLIAdapter) museMSPMissedSteers(ctx context.Context, s *museMSPSession, events <-chan museRPCMessage) []*museMSPSteer {
 	defer s.clearSteers()
 	giveUp := time.Now().Add(museMSPSteerAnswerWait)
 	deadline := time.Now().Add(museMSPSteerVerdictWait)
@@ -106,11 +109,11 @@ func (a *MuseCLIAdapter) museMSPMissedSteers(ctx context.Context, s *museMSPSess
 				offset = steer.offset
 			}
 		}
-		rejected, err := museRejectedCommands(path, offset)
-		var missed []string
+		rejected, err := museRejectedCommands(path, offset, s.sessionID)
+		var missed []*museMSPSteer
 		for _, steer := range steers {
 			if rejected[steer.commandID] {
-				missed = append(missed, steer.message)
+				missed = append(missed, steer)
 			}
 		}
 		now := time.Now()
@@ -138,7 +141,7 @@ func (a *MuseCLIAdapter) museMSPMissedSteers(ctx context.Context, s *museMSPSess
 // museRejectedCommands lists the command IDs of the turn_submit.rejected rows
 // at or after offset. A row still being written fails to parse and is read on
 // the next poll.
-func museRejectedCommands(path string, offset int64) (map[string]bool, error) {
+func museRejectedCommands(path string, offset int64, session string) (map[string]bool, error) {
 	if path == "" {
 		return nil, errors.New("no session journal")
 	}
@@ -151,24 +154,37 @@ func museRejectedCommands(path string, offset int64) (map[string]bool, error) {
 		return nil, err
 	}
 	rejected := map[string]bool{}
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if !strings.Contains(string(line), `"turn_submit.rejected"`) {
+	// Rejection rows contain metadata/IDs only. Skip large native input rows
+	// in bounded chunks rather than buffering image-bearing journal payloads.
+	reader := bufio.NewReaderSize(f, 64*1024)
+	oversized := false
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		if readErr == bufio.ErrBufferFull {
+			oversized = true
 			continue
 		}
-		var row struct {
-			PayloadType string `json:"payload_type"`
-			Payload     struct {
-				Record struct {
-					CommandID string `json:"command_id"`
-				} `json:"record"`
-			} `json:"payload"`
+		if oversized {
+			log.Printf("[MUSE_MSP] session=%s action=skipped reason=oversized_journal_row", session)
+			oversized = false
+		} else if bytes.Contains(line, []byte(`"turn_submit.rejected"`)) {
+			var row struct {
+				PayloadType string `json:"payload_type"`
+				Payload     struct {
+					Record struct {
+						CommandID string `json:"command_id"`
+					} `json:"record"`
+				} `json:"payload"`
+			}
+			if json.Unmarshal(line, &row) == nil && row.PayloadType == "turn_submit.rejected" && row.Payload.Record.CommandID != "" {
+				rejected[row.Payload.Record.CommandID] = true
+			}
 		}
-		if json.Unmarshal(line, &row) == nil && row.PayloadType == "turn_submit.rejected" && row.Payload.Record.CommandID != "" {
-			rejected[row.Payload.Record.CommandID] = true
+		if readErr == io.EOF {
+			return rejected, nil
+		}
+		if readErr != nil {
+			return rejected, readErr
 		}
 	}
-	return rejected, scanner.Err()
 }
