@@ -78,4 +78,33 @@ func TestAgyACPReassertsThoughtCategoryEveryTurnAndLogsRefusal(t *testing.T) {
 	if !strings.Contains(output.String(), "thought_level_set_failed=true code=-32602") || strings.Contains(output.String(), "PRIVATE_VALUE") {
 		t.Fatalf("missing or unsafe error log: %q", output.String())
 	}
+	// Missing capability metadata must not discard a previously supported setting.
+	unknownRPC := &agyACP{pending: map[string]chan agyACPMessage{}, done: make(chan struct{})}
+	unknown := &agyACPSession{rpc: unknownRPC, sessionID: "selected-session", model: "same-model"}
+	called := false
+	unknownRPC.stdin = agyConfigWireWriter(func(raw []byte) (int, error) {
+		var request struct {
+			ID     json.RawMessage   `json:"id"`
+			Params map[string]string `json:"params"`
+		}
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Params["configId"] != "thought_level" || request.Params["value"] != "low" {
+			t.Fatal("missing configOptions discarded the thought setting")
+		}
+		called = true
+		unknownRPC.mu.Lock()
+		ch := unknownRPC.pending[string(request.ID)]
+		unknownRPC.mu.Unlock()
+		ch <- agyACPMessage{Result: json.RawMessage(`{}`)}
+		return len(raw), nil
+	})
+	unknown.turnMu.Lock()
+	err = unknown.applySelection(ctx, "same-model", "model-option", "low")
+	unknown.turnMu.Unlock()
+	if err != nil || !called {
+		t.Fatalf("unknown-capability thought setting: called=%t err=%v", called, err)
+	}
+
 }

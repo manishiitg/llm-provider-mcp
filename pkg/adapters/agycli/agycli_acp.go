@@ -683,6 +683,9 @@ func (s *agyACPSession) applySelection(ctx context.Context, model, modelOption, 
 	}
 	s.mu.Lock()
 	id := ""
+	if s.configOptions == nil {
+		id = "thought_level"
+	}
 	for _, option := range s.configOptions {
 		if option.Category == "thought_level" && option.Type == "select" {
 			id = option.ID
