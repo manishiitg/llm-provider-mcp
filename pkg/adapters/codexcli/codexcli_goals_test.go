@@ -120,12 +120,14 @@ func TestCodexGoalRunsNativeContinuationUntilTerminalState(t *testing.T) {
 // Invalid objectives leave the native goal untouched. Unsupported native
 // methods are different from a transient failure; neither starts model work.
 func TestCodexGoalControlDoesNotFallbackToAnOrdinaryPrompt(t *testing.T) {
-	for _, scenario := range []string{"too_long", "show", "unsupported", "read_failed"} {
+	for _, scenario := range []string{"too_long", "show", "show_empty", "unsupported", "read_failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			rpc, wire := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
 				switch scenario {
 				case "unsupported":
 					return codexRPCMessage{Error: &codexRPCError{Code: -32601, Message: "Method not found"}}
+				case "show_empty":
+					return codexRPCMessage{Result: json.RawMessage(`{"goal":null}`)}
 				case "read_failed":
 					return codexRPCMessage{Error: &codexRPCError{Code: -32000, Message: "temporarily unavailable"}}
 				default:
@@ -137,22 +139,32 @@ func TestCodexGoalControlDoesNotFallbackToAnOrdinaryPrompt(t *testing.T) {
 			if scenario == "too_long" {
 				command = llmtypes.NativeGoalCommand{Action: "set", Objective: strings.Repeat("x", 4001)}
 			}
-			_, activate, _, err := (&CodexCLIAdapter{}).prepareCodexGoalCommand(context.Background(), session, rpc, "thread", command, func(llmtypes.StreamChunk) {})
-			if activate {
-				t.Fatal("control started model work")
+			snapshots := 0
+			for i := 0; i < 2; i++ {
+				_, activate, _, err := (&CodexCLIAdapter{}).prepareCodexGoalCommand(context.Background(), session, rpc, "thread", command, func(chunk llmtypes.StreamChunk) {
+					if chunk.NativeGoal != nil {
+						snapshots++
+					}
+				})
+				if activate {
+					t.Fatal("control started model work")
+				}
+				var unavailable *llmtypes.NativeGoalUnavailableError
+				if scenario == "unsupported" && !errors.As(err, &unavailable) {
+					t.Fatal("unsupported native goal was not reported plainly")
+				}
+				if scenario == "read_failed" && (err == nil || errors.As(err, &unavailable)) {
+					t.Fatal("transient read was mislabeled unsupported")
+				}
+				if scenario == "too_long" && (err == nil || len(wire.requests) != 0) {
+					t.Fatal("invalid objective touched native goal")
+				}
+				if scenario == "show" && err != nil {
+					t.Fatal(err)
+				}
 			}
-			var unavailable *llmtypes.NativeGoalUnavailableError
-			if scenario == "unsupported" && !errors.As(err, &unavailable) {
-				t.Fatal("unsupported native goal was not reported plainly")
-			}
-			if scenario == "read_failed" && (err == nil || errors.As(err, &unavailable)) {
-				t.Fatal("transient read was mislabeled unsupported")
-			}
-			if scenario == "too_long" && (err == nil || len(wire.requests) != 0) {
-				t.Fatal("invalid objective touched native goal")
-			}
-			if scenario == "show" && err != nil {
-				t.Fatal(err)
+			if (scenario == "show" || scenario == "show_empty") && snapshots != 2 {
+				t.Fatal("explicit unchanged/unset read lost its snapshot")
 			}
 			for _, request := range wire.requests {
 				if request.Method == "turn/start" || request.Method == "thread/goal/clear" {
@@ -218,5 +230,76 @@ func TestCodexGoalStopAndNativeContinuationGapPauseTheOwnedThread(t *testing.T) 
 				t.Fatal("native pause command missing")
 			}
 		})
+	}
+}
+
+// PR166: uncertain activation must not leave an autonomous goal unobserved;
+// failed first-turn startup and explicit clear must discard the setup guard.
+func TestCodexGoalAbandonedStartupCannotLeaveAnActiveGoal(t *testing.T) {
+	for _, scenario := range []string{"turn_failed", "activation_canceled", "cleanup_failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			rpc, wire := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+				if request.Method == "turn/start" {
+					if scenario == "turn_failed" {
+						return codexRPCMessage{Error: &codexRPCError{Code: -32000, Message: "start failed"}}
+					}
+					return codexRPCMessage{Result: json.RawMessage(`{"turn":{"id":"first"}}`)}
+				}
+				if request.Method == "thread/goal/set" {
+					var params struct {
+						Status string `json:"status"`
+					}
+					_ = json.Unmarshal(request.Params, &params)
+					if params.Status == "active" {
+						cancel()
+						return codexRPCMessage{Error: &codexRPCError{Code: -32000, Message: "lost activation reply"}}
+					}
+					if scenario == "cleanup_failed" {
+						return codexRPCMessage{Error: &codexRPCError{Code: -32000, Message: "pause failed"}}
+					}
+					return codexRPCMessage{Result: goalWire("paused")}
+				}
+				return codexRPCMessage{Result: json.RawMessage(`{}`)}
+			})
+			session := &codexAppSession{owner: "chat", threadID: "thread", goalActivationPending: true, goal: &llmtypes.NativeGoal{Objective: "Finish the task", Status: "paused"}}
+			_, err := startCodexGoalTurn(ctx, session, rpc, "thread", map[string]any{"threadId": "thread"}, true, func(llmtypes.StreamChunk) {})
+			if err == nil || session.goalActivationPending {
+				t.Fatal("abandoned startup retained its activation guard")
+			}
+			if scenario == "activation_canceled" {
+				if session.goal.Status != "paused" {
+					t.Fatal("uncertain active goal was not paused")
+				}
+				interrupted := false
+				for _, request := range wire.requests {
+					if request.Method == "turn/interrupt" {
+						interrupted = true
+					}
+				}
+				if !interrupted {
+					t.Fatal("cleanup reused canceled context instead of interrupting")
+				}
+			}
+			if scenario == "cleanup_failed" || scenario == "turn_failed" {
+				select {
+				case <-rpc.done:
+				default:
+					t.Fatal("failed startup/cleanup left the process running")
+				}
+			}
+		})
+	}
+	rpc, _ := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+		if request.Method == "thread/goal/get" {
+			return codexRPCMessage{Result: goalWire("paused")}
+		}
+		return codexRPCMessage{Result: json.RawMessage(`{}`)}
+	})
+	session := &codexAppSession{owner: "chat", threadID: "thread", goalActivationPending: true}
+	_, _, _, err := (&CodexCLIAdapter{}).prepareCodexGoalCommand(context.Background(), session, rpc, "thread", llmtypes.NativeGoalCommand{Action: "clear"}, func(llmtypes.StreamChunk) {})
+	if err != nil || session.goalActivationPending {
+		t.Fatal("explicit clear retained activation guard")
 	}
 }
