@@ -256,10 +256,12 @@ func (p *claudeSDKProcess) control(ctx context.Context, kind, message string) (c
 	defer func() { finishClaudeImageDelivery(p.session.owner, request, controlErr, "accepted"); closeImages() }()
 	// Preparing an image can outlast the native turn. Never write it into a
 	// completed turn or treat that definite refusal as uncertain delivery.
-	select {
-	case <-p.done:
-		return fmt.Errorf("%w: Claude SDK turn ended during input preparation", llmtypes.ErrCodingAgentInputNotSent)
-	default:
+	if kind == "steer" {
+		select {
+		case <-p.done:
+			return fmt.Errorf("%w: Claude SDK turn ended during input preparation", llmtypes.ErrCodingAgentInputNotSent)
+		default:
+		}
 	}
 	id := randomHex(12)
 	reply := make(chan error, 1)
