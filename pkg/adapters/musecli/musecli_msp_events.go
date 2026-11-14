@@ -160,6 +160,14 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 					s.usage = &p
 					s.mu.Unlock()
 				}
+			case "turn/started":
+				var p struct {
+					TurnID string `json:"turnId"`
+				}
+				if json.Unmarshal(msg.Params, &p) == nil && p.TurnID != "" && p.TurnID != turnID {
+					a.handleIdleMuseMSP(s, msg)
+				}
+
 			case "turn/completed":
 				var p struct {
 					TurnID   string `json:"turnId"`
@@ -546,16 +554,27 @@ func (a *MuseCLIAdapter) handleIdleMuseMSP(s *museMSPSession, msg museRPCMessage
 			TurnID   string `json:"turnId"`
 			Terminal string `json:"terminal"`
 		}
-		_ = json.Unmarshal(msg.Params, &p)
+		if json.Unmarshal(msg.Params, &p) != nil || strings.TrimSpace(p.TurnID) == "" {
+			return
+		}
 		log.Printf("[MUSE_MSP] session=%s own turn %s %s %s (between chat turns)", s.sessionID, p.TurnID, msg.Method, p.Terminal)
-		if msg.Method == "turn/completed" {
+		if msg.Method == "turn/started" {
+			s.mu.Lock()
+			if s.wake == nil {
+				s.wake = map[string]*museMSPWake{}
+			}
+			if s.wake[p.TurnID] == nil {
+				s.wake[p.TurnID] = &museMSPWake{}
+			}
+			s.mu.Unlock()
+		} else {
 			s.mu.Lock()
 			wake := s.wake[p.TurnID]
 			delete(s.wake, p.TurnID)
 			s.mu.Unlock()
-			if wake != nil && strings.TrimSpace(strings.Join(wake.texts, "")) != "" {
+			if wake != nil {
 				if handler := museMSPReplyHandler.Load(); handler != nil {
-					(*handler)(MuseMSPReply{Owner: s.owner, NativeSessionID: s.sessionID, TurnID: p.TurnID, Text: strings.Join(wake.texts, "\n\n"), Sources: wake.sources})
+					(*handler)(MuseMSPReply{Owner: s.owner, NativeSessionID: s.sessionID, TurnID: p.TurnID, Terminal: p.Terminal, Text: strings.Join(wake.texts, "\n\n"), Sources: wake.sources})
 				}
 			}
 		}
@@ -582,13 +601,16 @@ func (a *MuseCLIAdapter) handleIdleMuseMSP(s *museMSPSession, msg museRPCMessage
 }
 
 // MuseMSPReply is a reply Muse wrote between the chat's turns: a turn it ran
-// on its own, usually because a Monitor fired. Sources names those Monitors.
+// on its own, usually because a Monitor fired. Text may be empty; the completed
+// turn still needs host handoff. Sources names those Monitors.
 type MuseMSPReply struct {
 	Owner           string
 	NativeSessionID string
 	TurnID          string
-	Text            string
-	Sources         []string
+	// Terminal preserves cancellation/failure so the host does not continue a stopped wake.
+	Terminal string
+	Text     string
+	Sources  []string
 }
 
 type museMSPWake struct {
