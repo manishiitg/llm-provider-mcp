@@ -295,6 +295,13 @@ type claudeSDKInput struct {
 func (in *claudeSDKInput) write(value any) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	if streaming, ok := value.(claudeSDKStreamingParams); ok {
+		if err := streaming.writeJSON(in.w); err != nil {
+			return err
+		}
+		_, err := io.WriteString(in.w, "\n")
+		return err
+	}
 	return json.NewEncoder(in.w).Encode(value)
 }
 
