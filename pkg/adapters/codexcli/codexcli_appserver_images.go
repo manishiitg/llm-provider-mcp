@@ -123,13 +123,10 @@ func (p *codexImageParams) close() {
 func codexParamsWithImages(ctx context.Context, owner string, base map[string]any, messages []llmtypes.MessageContent) (any, func(), error) {
 	inputs := llmtypes.ClaimNativeImageInputsForSession(ctx, owner)
 	if len(inputs) == 0 {
-		// Direct library callers may supply base64 in the latest human message.
+		// Direct callers use the same pending-human boundary as their text.
 		// The app uses admitted factories instead, so no image is saved in history.
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role != llmtypes.ChatMessageTypeHuman {
-				continue
-			}
-			for _, part := range messages[i].Parts {
+		for _, message := range llmtypes.PendingHumanMessages(messages) {
+			for _, part := range message.Parts {
 				var image *llmtypes.ImageContent
 				switch v := part.(type) {
 				case llmtypes.ImageContent:
@@ -155,7 +152,6 @@ func codexParamsWithImages(ctx context.Context, owner string, base map[string]an
 					return io.NopCloser(base64.NewDecoder(base64.StdEncoding, strings.NewReader(v.Data))), v.MediaType, n, nil
 				}})
 			}
-			break
 		}
 	}
 	if len(inputs) == 0 {

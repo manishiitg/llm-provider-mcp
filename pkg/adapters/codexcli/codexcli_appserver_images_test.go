@@ -165,3 +165,40 @@ func TestCodexImageEchoIsDiscardedBeforeEventQueue(t *testing.T) {
 		t.Fatal("next RPC frame lost", err)
 	}
 }
+
+// PR176/4573583545: queued human inputs must keep images from their earlier
+// pending message, but an assistant boundary must not replay an answered image.
+func TestCodexNativeImagesFollowPendingHumanMessages(t *testing.T) {
+	imageMessage := llmtypes.MessageContent{Role: llmtypes.ChatMessageTypeHuman, Parts: []llmtypes.ContentPart{llmtypes.ImageContent{SourceType: "base64", MediaType: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("fixture"))}}}
+	text := llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "What is in it?")
+	answered := llmtypes.TextPart(llmtypes.ChatMessageTypeAI, "Already answered")
+	for _, tc := range []struct {
+		name     string
+		messages []llmtypes.MessageContent
+		want     bool
+	}{
+		{"earlier_pending_image", []llmtypes.MessageContent{answered, imageMessage, text}, true},
+		{"answered_image", []llmtypes.MessageContent{imageMessage, answered}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params, closeImages, err := codexParamsWithImages(context.Background(), "chat", codexAppTurnParams("thread", buildCodexInteractivePrompt(tc.messages), &llmtypes.CallOptions{}), tc.messages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeImages()
+			images, ok := params.(*codexImageParams)
+			if ok != tc.want {
+				t.Fatal("image selection diverged from pending text")
+			}
+			if ok {
+				var wire bytes.Buffer
+				if err = images.writeJSON(&wire); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Contains(wire.Bytes(), []byte("data:image/png;base64,")) {
+					t.Fatal("pending image missing from native wire")
+				}
+			}
+		})
+	}
+}
