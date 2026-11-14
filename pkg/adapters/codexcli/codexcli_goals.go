@@ -186,7 +186,7 @@ func (c *CodexCLIAdapter) prepareCodexGoalCommand(ctx context.Context, s *codexA
 		if current == nil {
 			return "", false, nil, fmt.Errorf("No goal is set")
 		}
-		if objective != "" && (current.Objective != objective || current.Status != "paused") {
+		if objective != "" && (current.Objective != objective || (current.Status != "paused" && current.Status != "usage_limited")) {
 			log.Printf("[AGENT_GOAL] session=%s native=%s action=skipped status=%s reason=restore_target_changed", s.owner, thread, current.Status)
 			return "", false, nil, fmt.Errorf("The goal changed; automatic restoration was canceled")
 		}
