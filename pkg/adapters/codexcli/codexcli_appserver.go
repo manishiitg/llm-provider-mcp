@@ -514,6 +514,11 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 			return nil, err
 		}
 	}
+	params, closeImages, err := codexParamsWithImages(ctx, owner, codexAppTurnParams(thread, prompt, opts), messages)
+	if err != nil {
+		return nil, err
+	}
+	defer closeImages()
 	goalCommand, hasGoalCommand := llmtypes.NativeGoalCommandForSession(ctx, owner)
 	activateGoal := false
 	if hasGoalCommand {
@@ -532,6 +537,12 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	params, closeImages, err := codexParamsWithImages(ctx, owner, codexAppTurnParams(thread, prompt, opts), messages)
 	if err != nil {
 		return nil, err
+	}
+	switch p := params.(type) {
+	case map[string]any:
+		p["input"] = codexAppTextInput(prompt)
+	case *codexImageParams:
+		p.base["input"] = codexAppTextInput(prompt)
 	}
 	turn, err := startCodexGoalTurn(ctx, s, r, thread, params, activateGoal, emit)
 	finishCodexImageDelivery(owner, params, err)

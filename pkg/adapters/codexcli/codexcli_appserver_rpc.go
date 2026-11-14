@@ -152,11 +152,22 @@ func (r *codexRPC) finish(err error) {
 }
 
 func (r *codexRPC) read(stdout io.Reader) {
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
+	reader := bufio.NewReaderSize(stdout, 64*1024)
+	for {
+		raw, err := readCodexImageSafeFrame(reader)
+		if err != nil {
+			if err == io.EOF {
+				r.finish(io.EOF)
+			} else {
+				r.finish(fmt.Errorf("read codex app-server: %w", err))
+			}
+			return
+		}
+		if len(raw) == 0 {
+			continue
+		}
 		var msg codexRPCMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		if err := json.Unmarshal(raw, &msg); err != nil {
 			r.finish(fmt.Errorf("invalid codex app-server JSON: %w", err))
 			return
 		}
@@ -181,11 +192,6 @@ func (r *codexRPC) read(stdout io.Reader) {
 			r.finish(fmt.Errorf("codex app-server event consumer fell behind"))
 			return
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		r.finish(fmt.Errorf("read codex app-server: %w", err))
-	} else {
-		r.finish(io.EOF)
 	}
 }
 

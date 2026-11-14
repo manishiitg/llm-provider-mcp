@@ -1,6 +1,7 @@
 package codexcli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -126,5 +127,24 @@ func TestCodexNativeImagesPromptSteerAndRefusedDelivery(t *testing.T) {
 	}
 	if len(wire.frames) != 2 || wire.Len() != 0 || closed != 3 || len(session.receipts) != 1 {
 		t.Fatal("refused delivery wrote bytes, leaked resource or recorded a receipt")
+	}
+}
+
+// A native echo can exceed the ordinary non-image frame limit. It must be
+// stripped before entering the event queue, without changing text escapes or
+// splitting the next RPC frame. No image data belongs in the host transcript.
+func TestCodexImageEchoIsDiscardedBeforeEventQueue(t *testing.T) {
+	wire := `{"method":"item/started","params":{"item":{"type":"userMessage","content":[{"type":"text","text":"Question \\"quoted\\""},{"type":"image","url":"data:image/png;base64,` + strings.Repeat("A", 17<<20) + `"}]}}}` + "\n" + `{"id":"next","result":{}}` + "\n"
+	reader := bufio.NewReaderSize(strings.NewReader(wire), 4096)
+	frame, err := readCodexImageSafeFrame(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frame) > 1024 || bytes.Contains(frame, []byte("data:image")) || !json.Valid(frame) {
+		t.Fatal("image echo retained or JSON changed")
+	}
+	next, err := readCodexImageSafeFrame(reader)
+	if err != nil || !bytes.Contains(next, []byte("next")) {
+		t.Fatal("next RPC frame lost", err)
 	}
 }
