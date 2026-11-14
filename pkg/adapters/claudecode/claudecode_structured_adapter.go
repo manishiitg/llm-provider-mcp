@@ -639,6 +639,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 
 			case "system":
 				if ev.Subtype == "api_retry" && ev.Attempt > 0 {
+					if c.logger != nil {
+						c.logger.Infof("[CLAUDE_RETRY] session=%s attempt=%d max=%d delay_ms=%d action=waiting", owner, ev.Attempt, ev.MaxRetries, ev.RetryDelayMS)
+					}
 					emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeProviderRetry, ProviderRetry: &llmtypes.ProviderRetry{Provider: "claude-code", Attempt: ev.Attempt, MaxAttempts: ev.MaxRetries, DelayMS: ev.RetryDelayMS}})
 				}
 
