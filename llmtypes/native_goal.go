@@ -67,3 +67,16 @@ const StreamChunkTypeNativeGoal StreamChunkType = "native_goal"
 func NativeGoalChunk(update NativeGoalUpdate) StreamChunk {
 	return StreamChunk{Type: StreamChunkTypeNativeGoal, NativeGoal: &update}
 }
+
+// NativeGoalTurnPause is an authenticated host pause before an ordinary wake
+// or post-Stop turn. It is not a goal command and never replaces that input.
+type NativeGoalTurnPause struct{ SessionID, Reason string }
+type nativeGoalTurnPauseKey struct{}
+
+func WithNativeGoalTurnPause(ctx context.Context, pause NativeGoalTurnPause) context.Context {
+	return context.WithValue(ctx, nativeGoalTurnPauseKey{}, pause)
+}
+func NativeGoalTurnPauseForSession(ctx context.Context, sessionID string) (NativeGoalTurnPause, bool) {
+	pause, ok := ctx.Value(nativeGoalTurnPauseKey{}).(NativeGoalTurnPause)
+	return pause, ok && sessionID != "" && pause.SessionID == sessionID
+}

@@ -12,7 +12,14 @@ func TestNativeGoalCommandIsScopedToItsOwnSession(t *testing.T) {
 	if _, ok := NativeGoalCommandForSession(ctx, "parent"); !ok {
 		t.Fatal("own goal command missing")
 	}
+	pauseCtx := WithNativeGoalTurnPause(context.Background(), NativeGoalTurnPause{SessionID: "parent", Reason: "background_wake"})
+	if _, ok := NativeGoalTurnPauseForSession(pauseCtx, "parent"); !ok {
+		t.Fatal("own pause missing")
+	}
 	for _, session := range []string{"child", ""} {
+		if _, ok := NativeGoalTurnPauseForSession(pauseCtx, session); ok {
+			t.Fatal("goal wake pause crossed session boundary")
+		}
 		if _, ok := NativeGoalCommandForSession(ctx, session); ok {
 			t.Fatal("goal command crossed session boundary")
 		}

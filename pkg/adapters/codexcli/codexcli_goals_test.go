@@ -408,3 +408,52 @@ func TestCodexGoalNonPersistentCallKeepsProcessAcrossNativeTurns(t *testing.T) {
 func shellQuoteGoalFixture(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
+
+// PLAT-746-988: background work must not inherit an active goal, and a
+// cancelled restore must not resume a changed objective or an active goal.
+func TestCodexGoalWakePauseAndRestoreStayOnTheOwnedGoal(t *testing.T) {
+	rpc, wire := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+		status := "active"
+		if request.Method == "thread/goal/set" {
+			status = "paused"
+		}
+		return codexRPCMessage{Result: goalWire(status)}
+	})
+	session := &codexAppSession{owner: "chat", threadID: "thread"}
+	updates := []llmtypes.NativeGoalUpdate{}
+	err := pauseCodexGoalForTurn(context.Background(), session, rpc, "thread", llmtypes.NativeGoalTurnPause{SessionID: "chat", Reason: "background_wake"}, func(chunk llmtypes.StreamChunk) {
+		if chunk.NativeGoal != nil {
+			updates = append(updates, *chunk.NativeGoal)
+		}
+	})
+	if err != nil || len(updates) != 1 || updates[0].Reason != "background_wake" || updates[0].Goal.Status != "paused" {
+		t.Fatal("wake did not confirm a native pause", err)
+	}
+	for _, req := range wire.requests {
+		if req.Method == "turn/start" {
+			t.Fatal("pause started or replaced model work")
+		}
+	}
+	for _, status := range []string{"paused", "active"} {
+		rpc, wire := goalFixtureRPC(func(codexRPCMessage) codexRPCMessage { return codexRPCMessage{Result: goalWire(status)} })
+		objective := "Different old goal"
+		if status == "active" {
+			objective = "Finish the task"
+		}
+		_, activate, _, err := (&CodexCLIAdapter{}).prepareCodexGoalCommand(context.Background(), session, rpc, "thread", llmtypes.NativeGoalCommand{Action: "resume", Objective: objective}, func(llmtypes.StreamChunk) {})
+		if err == nil || activate || len(wire.requests) != 1 || wire.requests[0].Method != "thread/goal/get" {
+			t.Fatal("stale restore changed the goal")
+		}
+	}
+	owner := "native-goal-control-" + codexRandomHex(4)
+	session.owner = owner
+	session.rpc = rpc
+	codexAppSessions.Lock()
+	codexAppSessions.sessions[owner] = session
+	codexAppSessions.Unlock()
+	defer closeCodexAppSession(owner)
+	update, err := ControlCodexNativeGoal(context.Background(), owner, "show")
+	if err != nil || update == nil || update.NativeSessionID != "thread" || update.Provider != "codex-cli" {
+		t.Fatal("control result lost exact native identity", err)
+	}
+}
