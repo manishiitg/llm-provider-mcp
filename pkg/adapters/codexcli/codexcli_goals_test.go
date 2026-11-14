@@ -326,6 +326,9 @@ func TestCodexGoalNonPersistentCallKeepsProcessAcrossNativeTurns(t *testing.T) {
 		var mu sync.Mutex
 		send := func(v any) { mu.Lock(); defer mu.Unlock(); _ = json.NewEncoder(os.Stdout).Encode(v) }
 		notify := func(method, body string) { send(codexRPCMessage{Method: method, Params: json.RawMessage(body)}) }
+		wakeFixture := os.Getenv("AGENTWORKS_GOAL_WAKE_FIXTURE") == "1"
+		goalStatus := ""
+		turnCount := 0
 		scan := bufio.NewScanner(os.Stdin)
 		for scan.Scan() {
 			var req codexRPCMessage
@@ -337,22 +340,53 @@ func TestCodexGoalNonPersistentCallKeepsProcessAcrossNativeTurns(t *testing.T) {
 			}
 			result := json.RawMessage(`{}`)
 			activate := false
+			pausedFirst := false
 			switch req.Method {
 			case "thread/start":
 				result = json.RawMessage(`{"thread":{"id":"fixture-thread"}}`)
 			case "thread/goal/get":
 				result = json.RawMessage(`{"goal":null}`)
+				if goalStatus != "" {
+					result = goalWire(goalStatus)
+				}
 			case "turn/start":
-				result = json.RawMessage(`{"turn":{"id":"first"}}`)
+				turnCount++
+				id := "first"
+				if wakeFixture && turnCount == 2 {
+					id = "second"
+				}
+				if wakeFixture && turnCount == 3 {
+					id = "third"
+				}
+				result = json.RawMessage(`{"turn":{"id":"` + id + `"}}`)
 			case "thread/goal/set":
 				var params struct {
 					Status string `json:"status"`
 				}
 				_ = json.Unmarshal(req.Params, &params)
+				pausedFirst = wakeFixture && goalStatus == "active" && params.Status == "paused" && turnCount == 1
+				goalStatus = params.Status
 				result = goalWire(params.Status)
 				activate = params.Status == "active"
 			}
 			send(codexRPCMessage{ID: req.ID, Result: result})
+			if wakeFixture {
+				if pausedFirst {
+					notify("thread/goal/updated", `{"threadId":"fixture-thread","goal":{"objective":"Finish the task","status":"paused"}}`)
+					notify("turn/completed", `{"threadId":"fixture-thread","turn":{"id":"first","status":"completed"}}`)
+				}
+				if req.Method == "turn/start" && turnCount == 2 {
+					notify("item/completed", `{"threadId":"fixture-thread","turnId":"second","item":{"id":"wake-answer","type":"agentMessage","text":"wake done"}}`)
+					notify("turn/completed", `{"threadId":"fixture-thread","turn":{"id":"second","status":"completed"}}`)
+				}
+				if activate && turnCount == 3 {
+					goalStatus = "complete"
+					notify("item/completed", `{"threadId":"fixture-thread","turnId":"third","item":{"id":"goal-answer","type":"agentMessage","text":"goal done"}}`)
+					notify("thread/goal/updated", `{"threadId":"fixture-thread","goal":{"objective":"Finish the task","status":"complete"}}`)
+					notify("turn/completed", `{"threadId":"fixture-thread","turn":{"id":"third","status":"completed"}}`)
+				}
+				continue
+			}
 			if activate {
 				go func() {
 					notify("turn/completed", `{"threadId":"fixture-thread","turn":{"id":"first","status":"completed"}}`)
@@ -455,5 +489,86 @@ func TestCodexGoalWakePauseAndRestoreStayOnTheOwnedGoal(t *testing.T) {
 	update, err := ControlCodexNativeGoal(context.Background(), owner, "show")
 	if err != nil || update == nil || update.NativeSessionID != "thread" || update.Provider != "codex-cli" {
 		t.Fatal("control result lost exact native identity", err)
+	}
+}
+
+// A wake pause must not kill native background work merely because the caller
+// uses the non-persistent default. The same process serves pause/wake/resume.
+func TestCodexGoalNonPersistentWakeRetainsItsOwnedProcessUntilRestore(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	wrapper := "#!/bin/sh\nexec " + shellQuoteGoalFixture(binary) + " -test.run '^TestCodexGoalNonPersistentCallKeepsProcessAcrossNativeTurns$'\n"
+	if err = os.WriteFile(filepath.Join(dir, "codex"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AGENTWORKS_GOAL_RPC_FIXTURE", "1")
+	t.Setenv("AGENTWORKS_GOAL_WAKE_FIXTURE", "1")
+	owner := "goal-wake-nonpersistent"
+	t.Cleanup(func() { closeCodexAppSession(owner) })
+	opts := &llmtypes.CallOptions{}
+	WithInteractiveSessionID(owner)(opts)
+	WithProjectDirID(dir)(opts)
+	chunks := make(chan llmtypes.StreamChunk, 64)
+	opts.StreamChan = chunks
+	active := make(chan struct{}, 1)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for chunk := range chunks {
+			if chunk.NativeGoal != nil && chunk.NativeGoal.Goal != nil && chunk.NativeGoal.Goal.Status == "active" {
+				select {
+				case active <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	adapter := NewCodexCLIAdapter("", "codex-cli", &MockLogger{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.generateContentAppServer(llmtypes.WithNativeGoalCommand(ctx, llmtypes.NativeGoalCommand{SessionID: owner, Action: "set", Objective: "Finish the task"}), []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "/goal Finish the task")}, opts)
+		done <- err
+	}()
+	select {
+	case <-active:
+	case <-ctx.Done():
+		t.Fatal("goal did not start")
+	}
+	if _, err = ControlCodexNativeGoal(ctx, owner, "wake_pause"); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	<-drained
+	opts.StreamChan = nil
+	session := codexAppSessionForOwner(owner)
+	if session == nil {
+		t.Fatal("wake pause closed non-persistent native process")
+	}
+	session.mu.Lock()
+	rpc := session.rpc
+	session.mu.Unlock()
+	wakeCtx := llmtypes.WithNativeGoalTurnPause(ctx, llmtypes.NativeGoalTurnPause{SessionID: owner, Reason: "background_wake"})
+	response, err := adapter.generateContentAppServer(wakeCtx, []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Background result")}, opts)
+	if err != nil || !strings.Contains(response.Choices[0].Content, "wake done") {
+		t.Fatal("paused wake failed", err)
+	}
+	session = codexAppSessionForOwner(owner)
+	if session == nil || session.rpc != rpc {
+		t.Fatal("wake did not retain the same owned native process")
+	}
+	response, err = adapter.generateContentAppServer(llmtypes.WithNativeGoalCommand(ctx, llmtypes.NativeGoalCommand{SessionID: owner, Action: "resume", Objective: "Finish the task"}), []llmtypes.MessageContent{llmtypes.TextPart(llmtypes.ChatMessageTypeHuman, "Resume after wake")}, opts)
+	if err != nil || !strings.Contains(response.Choices[0].Content, "goal done") {
+		t.Fatal("goal restore failed", err)
+	}
+	if codexAppSessionForOwner(owner) != nil {
+		t.Fatal("non-persistent restored goal did not clean up at completion")
 	}
 }

@@ -25,6 +25,7 @@ type codexAppSession struct {
 	owner                        string
 	goal                         *llmtypes.NativeGoal
 	goalActivationPending        bool
+	goalPausedForWake            bool
 	turnMu                       sync.Mutex
 	mu                           sync.Mutex
 	rpc                          *codexRPC
@@ -259,35 +260,35 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		s.idle = nil
 	}
 	s.mu.Unlock()
-	if persistent {
-		defer func() {
-			s.mu.Lock()
-			s.idle = time.AfterFunc(codexInteractiveIdleTimeout(), func() {
-				if !s.turnMu.TryLock() {
-					return
-				}
-				defer s.turnMu.Unlock()
-				codexAppSessions.Lock()
-				if codexAppSessions.sessions[owner] != s {
-					codexAppSessions.Unlock()
-					return
-				}
-				delete(codexAppSessions.sessions, owner)
-				codexAppSessions.Unlock()
-				s.mu.Lock()
-				r := s.rpc
-				s.mu.Unlock()
-				if r != nil {
-					r.close()
-				}
-			})
+	defer func() {
+		s.mu.Lock()
+		keep := persistent || (s.goalPausedForWake && ctx.Err() == nil)
+		if !keep {
 			s.mu.Unlock()
-		}()
-	}
-
-	if !persistent {
-		defer closeCodexAppSession(owner)
-	}
+			closeCodexAppSession(owner)
+			return
+		}
+		s.idle = time.AfterFunc(codexInteractiveIdleTimeout(), func() {
+			if !s.turnMu.TryLock() {
+				return
+			}
+			defer s.turnMu.Unlock()
+			codexAppSessions.Lock()
+			if codexAppSessions.sessions[owner] != s {
+				codexAppSessions.Unlock()
+				return
+			}
+			delete(codexAppSessions.sessions, owner)
+			codexAppSessions.Unlock()
+			s.mu.Lock()
+			r := s.rpc
+			s.mu.Unlock()
+			if r != nil {
+				r.close()
+			}
+		})
+		s.mu.Unlock()
+	}()
 	// Never reuse a process after its account, secret grants, sandbox or launch
 	// config changes. Store only a digest, not another copy of credentials.
 	config := map[string]any{"model": c.modelID, "cwd": cwd, "runtime_dir": opts.CLIRuntimeDir, "system": system, "native_questions": llmtypes.CodingAgentQuestionsAvailable(ctx), "security": opts.CLISecurity, "env": llmtypes.MergeCodingAgentSecretEnvironment(buildCodexStructuredEnv(c.apiKey), opts)}
