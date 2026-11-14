@@ -39,7 +39,21 @@ func readCodexImageSafeFrame(reader *bufio.Reader) ([]byte, error) {
 		} else {
 			frame = append(frame, c)
 			if c == '"' {
-				prefix, _ := reader.Peek(len("data:image/"))
+				// Compare incrementally: Peek(11) would deadlock on a short
+				// final string when the process waits for this frame's response.
+				marker := []byte("data:image/")
+				prefix := make([]byte, 0, len(marker))
+				for _, wanted := range marker {
+					next, e := reader.ReadByte()
+					if e != nil {
+						return nil, e
+					}
+					prefix = append(prefix, next)
+					if next != wanted {
+						break
+					}
+				}
+
 				if bytes.Equal(prefix, []byte("data:image/")) {
 					// Base64 is ASCII with no quotes; still honor JSON escapes so a
 					// malformed string cannot consume another field/frame silently.
@@ -66,7 +80,14 @@ func readCodexImageSafeFrame(reader *bufio.Reader) ([]byte, error) {
 					}
 					frame = append(frame, []byte("[native image omitted]\"")...)
 				} else {
+					frame = append(frame, prefix...)
 					inString = true
+					last := prefix[len(prefix)-1]
+					if last == '"' {
+						inString = false
+					} else if last == '\\' {
+						escaped = true
+					}
 				}
 			}
 		}

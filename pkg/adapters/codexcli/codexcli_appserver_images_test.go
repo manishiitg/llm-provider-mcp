@@ -143,6 +143,10 @@ func TestCodexImageEchoIsDiscardedBeforeEventQueue(t *testing.T) {
 	if len(frame) > 1024 || bytes.Contains(frame, []byte("data:image")) || !json.Valid(frame) {
 		t.Fatal("image echo retained or JSON changed")
 	}
+	short, err := readCodexImageSafeFrame(bufio.NewReader(strings.NewReader(`{"text":""}` + "\n")))
+	if err != nil || !json.Valid(short) {
+		t.Fatal("short final string framing failed", err)
+	}
 	next, err := readCodexImageSafeFrame(reader)
 	if err != nil || !bytes.Contains(next, []byte("next")) {
 		t.Fatal("next RPC frame lost", err)
