@@ -12,6 +12,7 @@ import (
 	"io"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,15 +22,10 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-// A Claude Agent SDK chat runs one bridge process per session (PLAT-872). A turn
-// owns the process while it runs. When the turn ends at its answer while tasks
-// Claude itself started with run_in_background are still running (a dev server,
-// a long build), the process is kept ("parked") instead of exiting, so those
-// tasks keep running; the next turn of the same chat sends its prompt into the
-// same process when its launch is unchanged. A kept process closes when its
-// tasks finish, when the person presses Stop, when the chat closes, when the
-// next turn needs a different launch, or after the shared idle limit. Server
-// restarts end kept processes, as for Codex and Cursor.
+// A persistent Claude SDK chat parks its existing query after every answer,
+// not only while Claude's own tasks run (PLAT-746-941). The next unchanged
+// launch continues that query. Task-free queries have a short idle bound and
+// LRU cap; active background work keeps the existing wake/adoption path.
 
 // SDKBackgroundTask is one background task Claude started itself that is still running.
 type SDKBackgroundTask struct {
@@ -359,6 +355,8 @@ type claudeSDKSession struct {
 	tasks     []SDKBackgroundTask
 	helpers   map[string]SDKHelperTask
 	parked    bool
+	warm      bool // An ordinary persistent chat, kept even without tasks.
+	lastUsed  time.Time
 	closing   bool
 	idle      *time.Timer
 	drainStop chan struct{}
@@ -386,6 +384,35 @@ var claudeSDKWakeGrace = 30 * time.Second
 var claudeSDKWakeHoldLimit = 60 * time.Second
 var claudeSDKWakeNextID atomic.Uint64
 
+const claudeSDKWarmLimit = 4
+
+var claudeSDKWarmIdle = 15 * time.Minute
+
+type claudeSDKWarmMemory struct {
+	BridgeRSSBytes int64 `json:"bridge_rss_bytes"`
+	NativePID      int   `json:"native_pid"`
+}
+
+// A lifecycle snapshot, never a poller. Only the exact native child PID captured
+// by this bridge is sampled; failures are unknown, not zero-byte native memory.
+func (s *claudeSDKSession) logWarmMemory(memory *claudeSDKWarmMemory) {
+	if s.logger == nil {
+		return
+	}
+	nativeRSS := int64(-1)
+	if memory.NativePID > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		raw, err := exec.CommandContext(ctx, "ps", "-o", "rss=", "-p", strconv.Itoa(memory.NativePID)).Output()
+		cancel()
+		if err == nil {
+			if kb, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64); err == nil && kb > 0 {
+				nativeRSS = kb * 1024
+			}
+		}
+	}
+	s.logf("[CLAUDE_WARM] session=%s pid=%d action=memory native_pid=%d bridge_rss_bytes=%d native_rss_bytes=%d", s.owner, s.cmd.Process.Pid, memory.NativePID, memory.BridgeRSSBytes, nativeRSS)
+}
+
 // startClaudeSDKSession starts the bridge. cleanup runs once the process has exited.
 func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, stdin io.WriteCloser, stdout io.Reader, stderr *claudeLockedBuffer, kill context.CancelFunc, cleanup func(), logger interfaces.Logger) (*claudeSDKSession, error) {
 	if err := cmd.Start(); err != nil {
@@ -401,7 +428,8 @@ func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, 
 		// However the process ended (tasks finished, Stop, an interrupted turn,
 		// a crash), the chat's list must not keep showing tasks that died with it.
 		s.mu.Lock()
-		report := !s.closing && (s.parked || len(s.tasks) > 0)
+		report := !s.closing && (len(s.tasks) > 0 || (s.parked && !s.warm))
+		wasWarm := s.warm
 		s.closing = true
 		s.tasks = nil
 		if s.idle != nil {
@@ -409,6 +437,9 @@ func startClaudeSDKSession(owner string, launch claudeSDKLaunch, cmd *exec.Cmd, 
 		}
 		s.mu.Unlock()
 		s.unregister()
+		if wasWarm {
+			s.logf("[CLAUDE_WARM] session=%s pid=%d action=closed reason=process_exited", s.owner, s.cmd.Process.Pid)
+		}
 		if report {
 			s.logf("[SDK_BACKGROUND] stopped session=%s reason=process_exited", s.owner)
 			notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Closed: "finished"})
@@ -437,7 +468,14 @@ func (s *claudeSDKSession) setNativeID(id string) {
 
 func (s *claudeSDKSession) setTasks(tasks []SDKBackgroundTask) {
 	s.mu.Lock()
+	hadTasks := len(s.tasks) > 0
 	s.tasks = tasks
+	if s.parked && s.warm && hadTasks != (len(tasks) > 0) {
+		s.armIdleLocked()
+		if hadTasks && len(tasks) == 0 {
+			s.armWakeGraceLocked()
+		}
+	}
 	s.mu.Unlock()
 	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Tasks: tasks})
 }
@@ -462,13 +500,14 @@ var claudeSDKKept = struct {
 // park keeps the session after its turn: it starts the idle bound and a reader
 // that handles output while no turn owns the session.
 func (s *claudeSDKSession) park() {
-	idle := persistentInteractiveIdleTimeout()
 	s.mu.Lock()
 	s.parked = true
+	s.lastUsed = time.Now()
 	s.drainStop, s.drainDone = make(chan struct{}), make(chan struct{})
 	stop, done := s.drainStop, s.drainDone
-	s.idle = time.AfterFunc(idle, func() { s.closeIfParked("idle", "expired", fmt.Sprintf("idle %s", idle)) })
+	idle := s.armIdleLocked()
 	tasks := len(s.tasks)
+	warm, nativeID := s.warm, s.nativeID
 	s.mu.Unlock()
 	claudeSDKKept.Lock()
 	previous := claudeSDKKept.sessions[s.owner]
@@ -477,8 +516,55 @@ func (s *claudeSDKSession) park() {
 	if previous != nil && previous != s {
 		previous.closeIfParked("replaced", "stopped", "another session kept for this chat")
 	}
-	s.logf("[SDK_BACKGROUND] kept session=%s tasks=%d reason=own_background_tasks_running idle_limit=%s", s.owner, tasks, idle)
+	if tasks > 0 {
+		s.logf("[SDK_BACKGROUND] kept session=%s tasks=%d reason=own_background_tasks_running idle_limit=%s", s.owner, tasks, idle)
+	}
+	if warm {
+		s.logf("[CLAUDE_WARM] session=%s native=%s pid=%d action=kept tasks=%d idle_limit=%s", s.owner, nativeID, s.cmd.Process.Pid, tasks, idle)
+	}
 	go s.drain(stop, done)
+	trimClaudeSDKWarmSessions()
+}
+
+// One existing idle timer; active background work retains its previous bound.
+func (s *claudeSDKSession) armIdleLocked() time.Duration {
+	if s.idle != nil {
+		s.idle.Stop()
+	}
+	idle := persistentInteractiveIdleTimeout()
+	if s.warm && len(s.tasks) == 0 && idle > claudeSDKWarmIdle {
+		idle = claudeSDKWarmIdle
+	}
+	s.idle = time.AfterFunc(idle, func() { s.closeIfParked("idle", "expired", "idle") })
+	return idle
+}
+
+// Cap only task-free idle queries. A held/just-finishing wake retains its exact
+// receipt until adoption or the existing wake grace; never evict active work.
+func trimClaudeSDKWarmSessions() {
+	for {
+		claudeSDKKept.Lock()
+		var oldest *claudeSDKSession
+		var oldestUse time.Time
+		count := 0
+		for _, s := range claudeSDKKept.sessions {
+			s.mu.Lock()
+			eligible := s.warm && s.parked && !s.closing && len(s.tasks) == 0 && s.wakeFirst == "" && s.wakeGrace == nil
+			used := s.lastUsed
+			s.mu.Unlock()
+			if eligible {
+				count++
+				if oldest == nil || used.Before(oldestUse) {
+					oldest, oldestUse = s, used
+				}
+			}
+		}
+		claudeSDKKept.Unlock()
+		if count <= claudeSDKWarmLimit {
+			return
+		}
+		oldest.closeIfParked("evicted", "stopped", "cap")
+	}
 }
 
 // drain reads the kept session's output while no turn owns it. When Claude
@@ -554,8 +640,22 @@ func (s *claudeSDKSession) handleKeptLine(line string) bool {
 func (s *claudeSDKSession) armWakeGrace() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.armWakeGraceLocked()
+}
+
+func (s *claudeSDKSession) armWakeGraceLocked() {
 	if s.wakeGrace == nil && s.wakeFirst == "" {
-		s.wakeGrace = time.AfterFunc(claudeSDKWakeGrace, func() { s.closeIfParked("finished", "stopped", "tasks_finished") })
+		s.wakeGrace = time.AfterFunc(claudeSDKWakeGrace, func() {
+			s.mu.Lock()
+			s.wakeGrace = nil
+			warm := s.warm
+			s.mu.Unlock()
+			if warm {
+				trimClaudeSDKWarmSessions()
+			} else {
+				s.closeIfParked("finished", "stopped", "tasks_finished")
+			}
+		})
 	}
 }
 
@@ -597,6 +697,10 @@ func (s *claudeSDKSession) closeIfParked(closed, verb, reason string) bool {
 		s.mu.Unlock()
 		return false
 	}
+	if reason == "cap" && (!s.warm || len(s.tasks) > 0 || s.wakeFirst != "" || s.wakeGrace != nil) {
+		s.mu.Unlock()
+		return false
+	}
 	s.closing = true
 	if s.idle != nil {
 		s.idle.Stop()
@@ -609,11 +713,17 @@ func (s *claudeSDKSession) closeIfParked(closed, verb, reason string) bool {
 	s.wakeFirst = ""
 	s.stopWakeHoldLocked()
 	tasks := len(s.tasks)
+	warm, nativeID := s.warm, s.nativeID
 	s.tasks = nil
 	s.mu.Unlock()
 	s.unregister()
-	s.logf("[SDK_BACKGROUND] %s session=%s tasks=%d reason=%s", verb, s.owner, tasks, reason)
-	notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Closed: closed})
+	if tasks > 0 || !warm {
+		s.logf("[SDK_BACKGROUND] %s session=%s tasks=%d reason=%s", verb, s.owner, tasks, reason)
+		notifyClaudeSDKBackground(SDKBackgroundUpdate{Owner: s.owner, Closed: closed})
+	}
+	if warm {
+		s.logf("[CLAUDE_WARM] session=%s native=%s pid=%d action=%s reason=%s", s.owner, nativeID, s.cmd.Process.Pid, closed, reason)
+	}
 	s.shutdown()
 	if paused {
 		go func() {
@@ -682,6 +792,7 @@ func takeKeptClaudeSDKSession(owner string, launch claudeSDKLaunch, resumeSessio
 	}
 	if !ok {
 		s.mu.Unlock()
+		s.logf("[CLAUDE_WARM] session=%s pid=%d action=process_restart reason=%s", owner, s.cmd.Process.Pid, reason)
 		// Still parked: its reader keeps consuming output until the process exits.
 		s.closeIfParked("replaced", "stopped", reason)
 		return nil
@@ -690,6 +801,7 @@ func takeKeptClaudeSDKSession(owner string, launch claudeSDKLaunch, resumeSessio
 	s.mu.Unlock()
 	s.stopDrain()
 	s.logf("[SDK_BACKGROUND] reused session=%s tasks=%d", owner, tasks)
+	s.logf("[CLAUDE_WARM] session=%s native=%s pid=%d action=process_reuse reason=launch_unchanged", owner, resumeSessionID, s.cmd.Process.Pid)
 	return s
 }
 
@@ -818,6 +930,18 @@ func closeKeptClaudeSDKSession(owner, reason string) bool {
 		return false
 	}
 	return s.closeIfParked("stopped", "stopped", reason)
+}
+
+func closeAllKeptClaudeSDKSessions() {
+	claudeSDKKept.Lock()
+	sessions := make([]*claudeSDKSession, 0, len(claudeSDKKept.sessions))
+	for _, s := range claudeSDKKept.sessions {
+		sessions = append(sessions, s)
+	}
+	claudeSDKKept.Unlock()
+	for _, s := range sessions {
+		s.closeIfParked("stopped", "stopped", "shutdown")
+	}
 }
 
 func claudeSDKSessionForOwner(owner string) *claudeSDKSession {

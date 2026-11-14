@@ -26,9 +26,10 @@ const claudeStructuredNaturalExitGrace = 3 * time.Second
 // result event (final text in `result`, plus `usage` and `session_id`).
 type claudeStreamEvent struct {
 	SDKContinues bool `json:"sdk_continues,omitempty"`
-	// SDKParked: this final result ends the turn while Claude's own background
-	// tasks still run, so the bridge kept the session open (PLAT-872).
-	SDKParked bool `json:"sdk_parked,omitempty"`
+	// SDKParked: the result ends this turn but keeps its query, either warm or
+	// for Claude's own background work (PLAT-746-941).
+	SDKParked     bool                 `json:"sdk_parked,omitempty"`
+	SDKWarmMemory *claudeSDKWarmMemory `json:"sdk_warm_memory,omitempty"`
 	// SDKParkedTurn: output of a model turn the SDK ran on its own in a kept
 	// session; never part of the host's turn.
 	SDKParkedTurn bool                `json:"sdk_parked_turn,omitempty"`
@@ -433,7 +434,11 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			}
 			launchFilesHanded = true
 			sess.setNativeID(sessionID)
+			sess.logf("[CLAUDE_WARM] session=%s native=%s pid=%d action=process_restart reason=no_reusable_process", owner, sessionID, cmd.Process.Pid)
 		}
+		sess.mu.Lock()
+		sess.warm = keepAllowed
+		sess.mu.Unlock()
 		turnDone := make(chan struct{})
 		defer close(turnDone)
 		session := sess
@@ -451,9 +456,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			claudeSDKProcesses.Set(owner, sdkProcess)
 			defer claudeSDKProcesses.DeleteIf(owner, sdkProcess)
 		}
-		request := map[string]any{"type": "prompt", "text": prompt}
+		request := map[string]any{"type": "prompt", "text": prompt, "keep_warm": keepAllowed}
 		if adoptWake {
-			request = map[string]any{"type": "adopt"}
+			request = map[string]any{"type": "adopt", "keep_warm": keepAllowed}
 		}
 		if err := sdkProcess.write(request); err != nil {
 			sess.kill()
@@ -589,7 +594,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 			if ev.SDKParkedTurn && adoptWake && ev.Type == "result" {
 				// Claude's own turn ended before the bridge took the adopt: it is still this turn's
 				// answer. The bridge stays parked, so keep the session for running tasks or end it.
-				ev.SDKParked = sess.taskCount() > 0
+				ev.SDKParked = keepAllowed || sess.taskCount() > 0
 				if !ev.SDKParked {
 					_ = sess.input.write(map[string]any{"type": "stop_background", "id": randomHex(12)})
 				}
@@ -742,6 +747,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 					}
 				}
 			case "result":
+				if ev.SDKWarmMemory != nil && sess != nil && keepAllowed {
+					sess.logWarmMemory(ev.SDKWarmMemory)
+				}
 				if len(unshown) > 0 {
 					c.logger.Infof("[CLAUDE_SDK] unshown events session=%s %s", sessionID, claudeUnshownSummary(unshown))
 					unshown = map[string]int{}
@@ -782,7 +790,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				// guaranteed to be flushed. Let it exit naturally first; the
 				// signal sequence remains a backstop for a stuck CLI.
 				if !ev.SDKContinues {
-					if ev.SDKParked && sess != nil {
+					if ev.SDKParked && sess != nil && !ev.IsError {
 						if keepAllowed {
 							// The answer ends the turn; the session stays for the running tasks.
 							parkedTurn = true
@@ -803,7 +811,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	if released {
 		// Keep the session only for Claude's own background tasks; the work that
 		// held the turn finishes or ends with the session, never in this chat turn.
-		keep := keepAllowed && sess.taskCount() > 0
+		keep := keepAllowed
 		c.logger.Infof("[CLAUDE_SDK] turn ended at its answer after the server's idle limit session=%s keep=%t", sessionID, keep)
 		_ = sess.input.write(map[string]any{"type": "release", "keep": keep})
 		if keep {

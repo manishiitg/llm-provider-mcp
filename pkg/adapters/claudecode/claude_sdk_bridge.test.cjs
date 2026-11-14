@@ -167,3 +167,48 @@ test('helper type and description follow task-owned live progress without a poll
   assert.equal(latest.current_step, 'Grepping coding.go');
   assert.equal(latest.total_tokens, 154200);
 });
+
+test('PLAT-746-941 task-free warm turns reuse one query and Stop closes its input', { timeout: 5000 }, async t => {
+  const folder = mkdtempSync(join(tmpdir(), 'sdk-warm-'));
+  t.after(() => rmSync(folder, { recursive: true, force: true }));
+  writeFileSync(join(folder, 'sdk.mjs'), `
+let queries = 0;
+export function query({ prompt }) {
+  if (++queries !== 1) throw new Error('reopened the query');
+  const iterator = (async function* () {
+    yield { type: 'system', subtype: 'init', session_id: 'same-native-session' };
+    for await (const message of prompt) {
+      yield { type: 'result', result: message.message.content, user_message_uuids: [message.uuid] };
+    }
+  })();
+  iterator.close = () => {};
+  return iterator;
+}`);
+  const child = spawn(process.execPath, [join(__dirname, 'claude_sdk_bridge.cjs'), join(folder, 'sdk.mjs'), 'unused'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, AGENTWORKS_CLI_LAUNCH: '' } });
+  t.after(() => child.kill());
+  const events = []; let pending = '', stderr = '';
+  const send = request => child.stdin.write(JSON.stringify(request) + '\n');
+  child.stderr.on('data', data => stderr += data);
+  child.stdout.on('data', data => {
+    pending += data;
+    while (pending.includes('\n')) {
+      const end = pending.indexOf('\n'), line = pending.slice(0, end); pending = pending.slice(end + 1);
+      const event = JSON.parse(line); events.push(event);
+      if (event.type === 'result') {
+        if (event.result === 'first') send({ type: 'prompt', text: 'second', keep_warm: true });
+        else send({ type: 'stop_background', id: 'stop' });
+      }
+    }
+  });
+  const finished = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(stderr || 'bridge failed'))); });
+  send({ type: 'prompt', text: 'first', keep_warm: true });
+  await finished;
+  assert.equal(events.filter(event => event.type === 'system' && event.subtype === 'init').length, 1);
+  assert.deepEqual(events.filter(event => event.type === 'result').map(event => event.result), ['first', 'second']);
+  for (const result of events.filter(event => event.type === 'result')) {
+    assert.equal(result.sdk_continues, false);
+    assert.equal(result.sdk_parked, true);
+    assert.ok(result.sdk_warm_memory.bridge_rss_bytes > 0);
+  }
+  assert.ok(events.some(event => event.type === 'sdk_control_result' && event.id === 'stop'));
+});
