@@ -131,14 +131,14 @@ async function main() {
   // had queued is settled "revert_to_followup" only as its run ends, often after run.wait() returned.
   // So a turn waits for every steer's outcome before it ends, and answers each one the run did not
   // take (or never confirmed) as a follow-up: an accepted message is never dropped.
-  let steers = [];
+  let steers = [], steerIntakes = Promise.resolve();
   const settle = (entry, outcome) => {
     if (entry.settled) return;
     entry.settled = true;
     emit({ type: 'steer_outcome', id: entry.id, status: outcome });
     if (outcome !== 'complete_delivered') followups.push({text:entry.text,image_id:entry.image_id});
   };
-  const drop = () => { for (const entry of steers) entry.settled = true; steers = []; followups = []; };
+  const drop = () => { for (const entry of steers) entry.settled = true; steers = []; followups = []; steerIntakes = Promise.resolve(); };
   // Steering and cancel arrive while a run streams, so they are handled as they are read.
   const control = request => {
     if (request.type === 'steer') {
@@ -153,7 +153,21 @@ async function main() {
       const entry = { id: request.id, text: request.text, image_id:request.image_id };
       steers.push(entry);
       const target=run;
-      entry.done = (target.steer ? imageFrames.message(entry).then(message=>target.steer(message)) : Promise.resolve('revert_to_followup'))
+      // Keep queued entries as IDs/text; fetch at the head asynchronously,
+      // then invoke native steers in receipt order.
+      // Box the outcome promise: ordering intake must NOT wait for delivery
+      // outcomes, which Cursor may settle only after this run ends.
+      emit({type:'image_order',id:entry.id,action:'queued'});
+      const submitted = steerIntakes.then(async () => {
+        if (entry.settled) { emit({type:'image_order',id:entry.id,action:'skipped',status:'cancelled'});return {outcome:'cancelled'}; }
+        const message = await imageFrames.message(entry);
+        if (entry.settled) { emit({type:'image_order',id:entry.id,action:'skipped',status:'cancelled'});return {outcome:'cancelled'}; }
+        const outcome = target.steer ? target.steer(message) : 'revert_to_followup';
+        emit({type:'image_order',id:entry.id,action:'submitted'});
+        return {outcome};
+      });
+      steerIntakes = submitted.then(() => {}, () => {});
+      entry.done = submitted.then(value => value.outcome)
         .then(outcome => settle(entry, outcome), () => settle(entry, 'error'));
       return true;
     }
