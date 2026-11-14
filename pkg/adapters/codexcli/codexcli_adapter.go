@@ -91,6 +91,12 @@ func (c *CodexCLIAdapter) GenerateContent(ctx context.Context, messages []llmtyp
 		return nil, fmt.Errorf("unsupported Codex native transport %q", opts.CodingProviderTransport)
 	}
 	if tmux {
+		if _, ok := llmtypes.NativeGoalCommandFromContext(ctx); ok {
+			if opts.StreamChan != nil {
+				close(opts.StreamChan)
+			}
+			return nil, &llmtypes.NativeGoalUnavailableError{Program: "Codex in terminal transport"}
+		}
 		return c.generateContentInteractive(ctx, messages, opts)
 	}
 	return c.generateContentAppServer(ctx, messages, opts)

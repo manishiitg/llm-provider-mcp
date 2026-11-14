@@ -138,9 +138,10 @@ type StatusLineProvider interface {
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
-	CodingAgentPlan *CodingAgentPlan // Full provider-authored checklist snapshot.
-	Type            StreamChunkType  // Type of chunk: "content", "reasoning", "tool_call", "terminal", or "status_line"
-	Content         string           // Text content (when Type is "content" or "reasoning")
+	NativeGoal      *NativeGoalUpdate // Private goal state, never a token/account status snapshot.
+	CodingAgentPlan *CodingAgentPlan  // Full provider-authored checklist snapshot.
+	Type            StreamChunkType   // Type of chunk: "content", "reasoning", "tool_call", "terminal", or "status_line"
+	Content         string            // Text content (when Type is "content" or "reasoning")
 	Metadata        map[string]interface{}
 	ToolCall        *ToolCall     // Complete tool call (when Type is "tool_call")
 	ToolName        string        // Name of the tool (when Type is "tool_call_start" or "tool_call_end")
