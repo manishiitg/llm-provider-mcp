@@ -58,9 +58,6 @@ func ParseCodingAgentPlan(raw []byte, field string) (*CodingAgentPlan, bool) {
 			text = row.Step
 		}
 		text = strings.TrimSpace(text)
-		if text == "" {
-			return nil, false
-		}
 		status := ""
 		switch row.Status {
 		case "pending":
@@ -72,6 +69,9 @@ func ParseCodingAgentPlan(raw []byte, field string) (*CodingAgentPlan, bool) {
 		default:
 			return nil, false
 		}
+		if text == "" {
+			continue
+		} // Native lists can include blank placeholder rows.
 		id := row.ID
 		if id == "" {
 			id = fmt.Sprintf("step-%d", i+1)
