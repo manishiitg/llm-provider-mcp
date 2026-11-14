@@ -59,6 +59,9 @@ func agyACPOutcomeError(model, stop, carrier string, now time.Time) error {
 			}
 		}
 	}
+	if stop == "refusal" && !strings.Contains(carrier, "QUOTA_EXHAUSTED") && failure.RetryAt.IsZero() {
+		failure.Err = errors.New("Antigravity stopped this turn; it may be out of quota.")
+	}
 	return failure
 }
 

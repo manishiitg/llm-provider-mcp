@@ -124,6 +124,10 @@ func ProviderDisplay(err error) Display {
 			d.NextStep = "Try again, or pick another model."
 		case typed.Provider == "agy-cli" && typed.Kind == KindQuotaExhausted:
 			d.Message = "You have reached your Antigravity quota for this period."
+			if message == "Antigravity stopped this turn; it may be out of quota." {
+				d.Message = message
+				d.NextStep = "Try again later or pick another model."
+			}
 			if !typed.RetryAt.IsZero() {
 				d.NextStep = "Try again after " + typed.RetryAt.UTC().Format(time.RFC3339) + "."
 			}
