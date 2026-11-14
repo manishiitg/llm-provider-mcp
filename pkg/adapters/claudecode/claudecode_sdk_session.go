@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/commandlabel"
 	"io"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -182,30 +182,7 @@ type claudeSDKWireTask struct {
 	StartedAt   int64  `json:"started_at"`
 }
 
-const claudeBackgroundCommandLimit = 120
-
-var claudeInlineAssignment = regexp.MustCompile(`^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|\S*)\s+`)
-
-// claudeBackgroundCommandLabel is the short command shown to the person: the
-// first line, without leading NAME=value assignments (they can carry values
-// that must never be shown), trimmed to a readable length.
-func claudeBackgroundCommandLabel(command string) string {
-	command = strings.TrimSpace(strings.SplitN(strings.TrimSpace(command), "\n", 2)[0])
-	for {
-		trimmed := claudeInlineAssignment.ReplaceAllString(command, "")
-		if trimmed == command {
-			break
-		}
-		command = strings.TrimSpace(trimmed)
-	}
-	if claudeInlineAssignment.MatchString(command + " ") {
-		return ""
-	}
-	if runes := []rune(command); len(runes) > claudeBackgroundCommandLimit {
-		command = strings.TrimSpace(string(runes[:claudeBackgroundCommandLimit-1])) + "…"
-	}
-	return command
-}
+func claudeBackgroundCommandLabel(command string) string { return commandlabel.Label(command) }
 
 func claudeSDKTasksFromWire(wire []claudeSDKWireTask) []SDKBackgroundTask {
 	tasks := make([]SDKBackgroundTask, 0, len(wire))

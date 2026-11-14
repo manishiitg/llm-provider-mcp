@@ -35,7 +35,7 @@ func TestNativeRecordConformance(t *testing.T) {
 `, []string{"turn:started", "tool:started", "tool:finished"}},
 		{"claude-code", `{"type":"user","uuid":"u1","origin":{"kind":"human"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash","input":{"run_in_background":false}},{"type":"tool_use","id":"todo1","name":"TaskUpdate"}]}}
-{"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"backgroundTaskId":"command1"},"message":{"content":[{"type":"tool_result","tool_use_id":"bash1"}]}}
+{"type":"user","uuid":"result1","parentUuid":"a1","toolUseResult":{"backgroundTaskId":"command1","timedOutAfterMs":1000},"message":{"content":[{"type":"tool_result","tool_use_id":"bash1"}]}}
 {"type":"user","uuid":"todo-result","parentUuid":"result1","toolUseResult":{"taskId":"todo1"},"message":{"content":[{"type":"tool_result","tool_use_id":"todo1"}]}}
 {"type":"user","uuid":"notice","parentUuid":"todo-result","queueTranscriptOnly":true,"origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>command1</task-id><status>stopped</status></task-notification>"}}
 `, []string{"turn:started", "tool:started", "tool:started", "background_command:started", "tool:finished", "background_command:stopped"}},
@@ -133,5 +133,66 @@ func TestCodexCommandCompletionCarriesItsOutput(t *testing.T) {
 	}
 	if data, _ := json.Marshal(b.Records[0]); strings.Contains(string(data), "VERIFY") {
 		t.Fatalf("command output must not be serialized: %s", data)
+	}
+}
+
+// PLAT-746-941: a task id alone is not an intentional or timed-out background shell.
+func TestClaudeBackgroundShellClassification(t *testing.T) {
+	for _, tc := range []struct{ name, input, result, mode string }{
+		{"ordinary", `{"command":"gh pr list","run_in_background":false}`, `{"backgroundTaskId":"bg"}`, ""},
+		{"explicit", `{"command":"TOKEN=private deploy.sh verify\nignored","run_in_background":true}`, `{"backgroundTaskId":"bg"}`, "explicit"},
+		{"automatic", `{"command":"deploy.sh verify"}`, `{"backgroundTaskId":"bg","timedOutAfterMs":1000}`, "auto"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "session.jsonl")
+			first := `{"type":"user","uuid":"u","origin":{"kind":"human"}}` + "\n" + `{"type":"assistant","uuid":"a","parentUuid":"u","message":{"content":[{"type":"tool_use","id":"bash","name":"Bash","input":` + tc.input + `}]}}` + "\n"
+			if err := os.WriteFile(p, []byte(first), 0600); err != nil {
+				t.Fatal(err)
+			}
+			initial, err := Read(context.Background(), "claude-code", "session-test", p, Cursor{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Real observers persist their cursor between the tool start and result.
+			raw, err := json.Marshal(initial.Next)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cursor Cursor
+			if err := json.Unmarshal(raw, &cursor); err != nil {
+				t.Fatal(err)
+			}
+			rest := `{"type":"user","uuid":"r","parentUuid":"a","toolUseResult":` + tc.result + `,"message":{"content":[{"type":"tool_result","tool_use_id":"bash"}]}}` + "\n" + `{"type":"user","uuid":"n","parentUuid":"r","origin":{"kind":"task-notification"},"message":{"content":"<task-notification><task-id>bg</task-id><tool-use-id>bash</tool-use-id><status>completed</status></task-notification>"}}` + "\n"
+			f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.WriteString(rest)
+			f.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch, err := Read(context.Background(), "claude-code", "session-test", p, cursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, r := range batch.Records {
+				if r.Kind != "background_command" {
+					continue
+				}
+				count++
+				if r.BackgroundMode != tc.mode || r.CommandLabel != "deploy.sh verify" {
+					t.Fatalf("incorrect shell label/classification: %+v", r)
+				}
+			}
+			want := 2
+			if tc.mode == "" {
+				want = 0
+			}
+			if count != want {
+				t.Fatalf("background rows=%d want %d", count, want)
+			}
+		})
 	}
 }

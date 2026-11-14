@@ -3,6 +3,7 @@ package nativeevents
 import (
 	"encoding/xml"
 	"fmt"
+	"github.com/manishiitg/multi-llm-provider-go/internal/commandlabel"
 	"io"
 	"strconv"
 	"strings"
@@ -62,7 +63,12 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 					continue
 				}
 				if b.Next.Tools[out.ToolID] == "Bash" {
+					shell := b.Next.ShellCommands[out.ToolID]
+					if shell.Mode == "" {
+						continue
+					}
 					out.Kind = "background_command"
+					out.CommandLabel, out.BackgroundMode = shell.Label, shell.Mode
 				}
 				switch notice.Status {
 				case "completed":
@@ -116,9 +122,18 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 				}
 			}
 			if name == "Bash" {
-				if task := text(object(row["toolUseResult"]), "backgroundTaskId"); task != "" {
-					b.Next.Tasks[task] = tool
-					out.Kind, out.State, out.TaskID = "background_command", "started", task
+				result := object(row["toolUseResult"])
+				if task := text(result, "backgroundTaskId"); task != "" {
+					shell := b.Next.ShellCommands[tool]
+					if _, timedOut := result["timedOutAfterMs"]; timedOut && shell.Mode == "" {
+						shell.Mode = "auto"
+					}
+					b.Next.ShellCommands[tool] = shell
+					if shell.Mode != "" {
+						b.Next.Tasks[task] = tool
+						out.Kind, out.State, out.TaskID = "background_command", "started", task
+						out.CommandLabel, out.BackgroundMode = shell.Label, shell.Mode
+					}
 				}
 			}
 			emit(b, out)
@@ -148,6 +163,14 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 			case "tool_use":
 				out.Kind, out.State, out.ToolID, out.Name = "tool", "started", text(block, "id"), text(block, "name")
 				b.Next.Tools[out.ToolID] = out.Name
+				if out.Name == "Bash" {
+					input := object(block["input"])
+					shell := ShellCommand{Label: commandlabel.Label(text(input, "command"))}
+					if explicit, _ := input["run_in_background"].(bool); explicit {
+						shell.Mode = "explicit"
+					}
+					b.Next.ShellCommands[out.ToolID] = shell
+				}
 				if out.Name == "AskUserQuestion" {
 					out.Kind, out.State = "question", "requested"
 				}
