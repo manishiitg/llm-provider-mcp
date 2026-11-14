@@ -479,6 +479,34 @@ func TestCodexGoalWakePauseAndRestoreStayOnTheOwnedGoal(t *testing.T) {
 			t.Fatal("stale restore changed the goal")
 		}
 	}
+	// A rejected pause cannot retain active autonomous work without its consumer.
+	for _, mode := range []string{"turn", "controller"} {
+		failedRPC, _ := goalFixtureRPC(func(request codexRPCMessage) codexRPCMessage {
+			if request.Method == "thread/goal/set" {
+				return codexRPCMessage{Error: &codexRPCError{Code: -32000, Message: "pause refused"}}
+			}
+			return codexRPCMessage{Result: goalWire("active")}
+		})
+		failedSession := &codexAppSession{owner: "failed-pause-" + mode, threadID: "thread", rpc: failedRPC}
+		if mode == "turn" {
+			err = pauseCodexGoalForTurn(context.Background(), failedSession, failedRPC, "thread", llmtypes.NativeGoalTurnPause{Reason: "background_wake"}, nil)
+		} else {
+			codexAppSessions.Lock()
+			codexAppSessions.sessions[failedSession.owner] = failedSession
+			codexAppSessions.Unlock()
+			_, err = ControlCodexNativeGoal(context.Background(), failedSession.owner, "wake_pause")
+			closeCodexAppSession(failedSession.owner)
+		}
+		if err == nil || failedSession.goalPausedForWake {
+			t.Fatal("rejected pause retained the active native goal")
+		}
+		select {
+		case <-failedRPC.done:
+		default:
+			t.Fatal("rejected pause left autonomous process open")
+		}
+	}
+
 	owner := "native-goal-control-" + codexRandomHex(4)
 	session.owner = owner
 	session.rpc = rpc
