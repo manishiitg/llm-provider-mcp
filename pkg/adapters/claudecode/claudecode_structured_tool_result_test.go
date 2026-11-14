@@ -168,3 +168,22 @@ func TestClaudeNativeTextBlocksFrameWithoutRepeatingContent(t *testing.T) {
 		t.Fatalf("text changed: %q", live.String())
 	}
 }
+
+func TestClaudeAPIRetryUsesNativeRetryLifecycleWithoutAnswerText(t *testing.T) {
+	var text claudeStructuredText
+	var phases []string
+	var answer strings.Builder
+	emit := func(chunk llmtypes.StreamChunk) {
+		if chunk.NativeRetry != nil {
+			phases = append(phases, chunk.NativeRetry.Phase)
+		}
+		if chunk.Type == llmtypes.StreamChunkTypeContent {
+			answer.WriteString(chunk.Content)
+		}
+	}
+	text.observe(claudeStreamEvent{Type: "system", Subtype: "api_retry", Attempt: 1, MaxRetries: 3, RetryDelayMS: 2000}, emit)
+	text.observe(claudeStreamEvent{Type: "result", Result: "done"}, emit)
+	if strings.Join(phases, ",") != "start,end" || strings.Contains(answer.String(), "retry") {
+		t.Fatalf("phases=%v answer=%q", phases, answer.String())
+	}
+}
