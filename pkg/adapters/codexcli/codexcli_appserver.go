@@ -460,10 +460,10 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	if c.logger != nil {
 		c.logger.Infof("codex app-server turn started owner=%s thread=%s turn=%s", owner, thread, turn)
 	}
-	return c.consumeAppTurnWithCapacityRetry(ctx, s, r, owner, thread, turn, opts, emit)
+	return c.consumeAppTurnWithCapacityRetry(ctx, s, r, owner, thread, turn, prompt, opts, emit)
 }
 
-func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s *codexAppSession, r *codexRPC, owner, thread, turn string, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s *codexAppSession, r *codexRPC, owner, thread, turn, originalPrompt string, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
 	var started struct {
 		Turn codexAppTurn `json:"turn"`
 	}
@@ -483,7 +483,9 @@ func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s
 		response, turnErr := c.consumeAppTurn(ctx, s, r, thread, turn, emit)
 		finishRetry(turnErr == nil)
 		var nativeErr *CodexTurnError
-		if !errors.As(turnErr, &nativeErr) || !nativeErr.Capacity() || attempt >= 5 {
+		// /compact is a command, not unfinished task input. Never turn a failed
+		// compaction into a fresh empty-input continuation.
+		if strings.EqualFold(strings.TrimSpace(originalPrompt), "/compact") || !errors.As(turnErr, &nativeErr) || !nativeErr.Capacity() || attempt >= 5 {
 			if attempt > 0 && c.logger != nil {
 				outcome := "done"
 				reason := "completed"

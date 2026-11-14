@@ -61,7 +61,7 @@ func TestCodexCapacityRetryContinuesEmptyInputAndCaps(t *testing.T) {
 		r.stdin = w
 		r.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"first","status":"failed","error":{"message":"busy","codexErrorInfo":"serverOverloaded"}}}`)}
 		retries := 0
-		_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(context.Background(), &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
+		_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(context.Background(), &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", "task", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
 			if c.NativeRetry != nil && c.NativeRetry.Phase == "start" {
 				retries++
 			}
@@ -81,13 +81,29 @@ func TestCodexCapacityRetryContinuesEmptyInputAndCaps(t *testing.T) {
 	w := &capacityRetryWriter{t: t, rpc: r}
 	r.stdin = w
 	r.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"first","status":"failed","error":{"message":"busy","codexErrorInfo":"serverOverloaded"}}}`)}
-	_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(ctx, &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
+	_, err := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(ctx, &codexAppSession{threadID: "thread"}, r, "owner", "thread", "first", "task", &llmtypes.CallOptions{}, func(c llmtypes.StreamChunk) {
 		if c.NativeRetry != nil && c.NativeRetry.Phase == "start" {
 			cancel()
 		}
 	})
 	if err != context.Canceled || w.starts != 0 {
 		t.Fatalf("cancelled retry starts=%d err=%v", w.starts, err)
+	}
+
+	// T3 capacity recovery explicitly excludes /compact. Its failure remains a
+	// failure, with no empty-input task continuation and no retry progress row.
+	compactRPC := &codexRPC{events: make(chan codexRPCMessage, 1), done: make(chan struct{}), pending: map[string]chan codexRPCMessage{}}
+	compactWriter := &capacityRetryWriter{t: t, rpc: compactRPC}
+	compactRPC.stdin = compactWriter
+	compactRPC.events <- codexRPCMessage{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread","turn":{"id":"compact","status":"failed","error":{"message":"busy","codexErrorInfo":"serverOverloaded"}}}`)}
+	compactRetries := 0
+	_, compactErr := (&CodexCLIAdapter{}).consumeAppTurnWithCapacityRetry(context.Background(), &codexAppSession{threadID: "thread"}, compactRPC, "owner", "thread", "compact", " /compact ", &llmtypes.CallOptions{}, func(chunk llmtypes.StreamChunk) {
+		if chunk.NativeRetry != nil {
+			compactRetries++
+		}
+	})
+	if compactErr == nil || compactWriter.starts != 0 || compactRetries != 0 {
+		t.Fatalf("compact became task continuation: starts=%d notices=%d err=%v", compactWriter.starts, compactRetries, compactErr)
 	}
 
 }
