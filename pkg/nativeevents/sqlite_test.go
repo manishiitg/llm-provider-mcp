@@ -123,9 +123,13 @@ func TestAgySubagentRowOpensAndClosesWithItsChild(t *testing.T) {
 	for _, field := range []protowire.Number{143, 2, 6, 2, 140} {
 		payload = protowire.AppendBytes(protowire.AppendTag(nil, field, protowire.BytesType), payload)
 	}
-	if _, err := parent.Exec(`INSERT INTO steps VALUES(1,132,?,3)`, payload); err != nil {
+	if _, err := parent.Exec(`INSERT INTO steps VALUES(1,14,x'',3)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := parent.Exec(`INSERT INTO steps VALUES(2,132,?,3)`, payload); err != nil {
+		t.Fatal(err)
+	}
+	const launchTurn = "step:1"
 	if _, err := child.Exec(`INSERT INTO steps VALUES(1,15,x'',1)`); err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +151,20 @@ func TestAgySubagentRowOpensAndClosesWithItsChild(t *testing.T) {
 	if _, err := child.Exec(`UPDATE steps SET status=3 WHERE idx=1`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := parent.Exec(`INSERT INTO steps VALUES(3,14,x'',3)`); err != nil { // a later turn begins
+		t.Fatal(err)
+	}
 	b, err = Read(context.Background(), "agy-cli", "native", filepath.Join(dir, "parent.db"), b.Next)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := states(b); len(got) != 1 || got[0] != "child1:finished" {
 		t.Fatalf("the finished child closes its row once, got %v", got)
+	}
+	// Both records carry the turn that launched the child: the first turn here, though a later turn was scanned since.
+	for _, r := range b.Records {
+		if r.Kind == "helper" && r.TurnID != launchTurn {
+			t.Fatalf("the finish lost the launching turn: %q, want %q", r.TurnID, launchTurn)
+		}
 	}
 }
