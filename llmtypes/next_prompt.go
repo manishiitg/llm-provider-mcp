@@ -11,6 +11,7 @@ import (
 // instruction to send a message, and cannot be inherited by another owner or
 // provider. Programs without native cached sampling simply never produce one.
 type NextPromptScope struct {
+	StillCurrent            func(hostTurn string) bool
 	Owner, Provider, TurnID string
 	Eligible                bool
 	Complete                func(NextPromptResult)
@@ -66,4 +67,10 @@ func NextPromptNearLimit(windows []RateLimitWindow) bool {
 		}
 	}
 	return false
+}
+
+// Current is a host-side cancellation fence, independent of a normal turn's
+// context cancellation after completion. Native thread identity is checked too.
+func (scope NextPromptScope) Current() bool {
+	return scope.Complete != nil && (scope.StillCurrent == nil || scope.StillCurrent(scope.TurnID))
 }
