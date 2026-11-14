@@ -24,6 +24,20 @@ func TestMuseMSPWakeTurnReplyReachesTheHost(t *testing.T) {
 	if len(got) != 1 || got[0].Owner != "chat-1" || got[0].Text != "Build finished: 3 tests failed." || len(got[0].Sources) != 1 || got[0].Sources[0] != "CI build" {
 		t.Fatalf("wake reply = %+v", got)
 	}
+	// A start notification can precede the foreground RPC response. Once the
+	// response identifies that turn, even a late idle completion is not a wake.
+	a.handleIdleMuseMSP(s, event("turn/started", map[string]any{"turnId": "foreground"}))
+	s.mu.Lock()
+	s.turnID = "foreground"
+	s.lastForegroundTurnID = "foreground"
+	delete(s.wake, "foreground") // same admission as turn/start's response
+	s.turnID = ""                // foreground consumer already finished
+	s.mu.Unlock()
+	a.handleIdleMuseMSP(s, event("turn/completed", map[string]any{"turnId": "foreground", "terminal": "completed"}))
+	if len(got) != 1 {
+		t.Fatalf("foreground turn handed off as wake: %+v", got)
+	}
+
 	// PLAT-746-941: a completed native wake with no assistant text must still
 	// reach the shared continuation queue; duplicate terminal events cannot wake twice.
 	for _, terminal := range []string{"completed", "cancelled", "failed"} {

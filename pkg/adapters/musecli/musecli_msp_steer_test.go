@@ -63,6 +63,7 @@ func (h *fakeMuseHost) serve() {
 			n := len(h.starts)
 			h.mu.Unlock()
 			turnID := fmt.Sprintf("turn-%d", n)
+			h.send(map[string]any{"method": "turn/started", "params": map[string]any{"turnId": turnID}})
 			h.send(map[string]any{"id": req.ID, "result": map[string]any{"turnId": turnID}})
 			if n > 1 {
 				h.endTurn(turnID, "answer to the steer")
@@ -165,6 +166,12 @@ func TestMuseMSPSteerRejectedAtTurnEndRunsOnceAsNextTurn(t *testing.T) {
 			host.mu.Unlock()
 			if strings.Join(starts, "|") != strings.Join(tc.wantStarts, "|") {
 				t.Fatalf("turns started = %q, want %q", starts, tc.wantStarts)
+			}
+			s.mu.Lock()
+			pendingWakes := len(s.wake)
+			s.mu.Unlock()
+			if pendingWakes != 0 {
+				t.Fatalf("foreground start became wake: %d", pendingWakes)
 			}
 			if got := resp.Choices[0].Content; got != tc.wantAnswer {
 				t.Fatalf("answer = %q, want %q", got, tc.wantAnswer)

@@ -63,12 +63,13 @@ type museMSPSession struct {
 	roots []string
 	// handoffPending: the next turn restates the current instructions (the
 	// first turn after a transfer); it clears only when that turn succeeds.
-	handoffPending bool
-	fingerprint    string
-	turnID         string
-	usage          *museMSPPlanUsage
-	context        museMSPContext
-	cleanup        func()
+	handoffPending       bool
+	fingerprint          string
+	turnID               string
+	lastForegroundTurnID string
+	usage                *museMSPPlanUsage
+	context              museMSPContext
+	cleanup              func()
 	// listener receives the host's events while one of this chat's own turns
 	// (or a compaction) runs; between them pumpMuseMSP handles them.
 	listener chan museRPCMessage
@@ -559,6 +560,8 @@ func (a *MuseCLIAdapter) runMuseMSPTurns(ctx context.Context, s *museMSPSession,
 		}
 		s.mu.Lock()
 		s.turnID = started.TurnID
+		s.lastForegroundTurnID = started.TurnID
+		delete(s.wake, started.TurnID)
 		s.mu.Unlock()
 		if totals.followups == 0 {
 			llmtypes.SignalPromptAccepted(opts.StreamChan)
