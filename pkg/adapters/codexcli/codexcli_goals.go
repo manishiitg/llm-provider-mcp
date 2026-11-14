@@ -44,6 +44,9 @@ func recordCodexGoal(s *codexAppSession, goal *llmtypes.NativeGoal, emit func(ll
 	s.mu.Lock()
 	changed := !reflect.DeepEqual(s.goal, goal)
 	s.goal = goal
+	if goal == nil || (goal.Status != "active" && goal.Status != "paused") {
+		s.goalPausedForWake = false
+	}
 	owner, thread := s.owner, s.threadID
 	s.mu.Unlock()
 	if !changed && reason != "native_read" {
@@ -104,6 +107,9 @@ func setCodexGoalStatus(ctx context.Context, s *codexAppSession, r *codexRPC, th
 	if status == "paused" {
 		s.mu.Lock()
 		s.goalActivationPending = false
+		if reason != "background_wake" {
+			s.goalPausedForWake = false
+		}
 		s.mu.Unlock()
 	}
 	recordCodexGoal(s, goal, emit, reason)
@@ -131,17 +137,30 @@ func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtype
 			return goal, err
 		}
 		switch action {
-		case "pause":
-			if goal.Status != "active" {
-				return goal, nil
+		case "pause", "wake_pause":
+			reason := "person_pause"
+			if action == "wake_pause" {
+				reason = "background_wake"
 			}
-			return setCodexGoalStatus(ctx, s, r, thread, "paused", nil, "person_pause")
+			// Register the paused-wake lifetime before the RPC: its native
+			// notification can finish the owning turn before the reply is read.
+			s.mu.Lock()
+			s.goalPausedForWake = action == "wake_pause" && (goal.Status == "active" || goal.Status == "paused")
+			s.mu.Unlock()
+			if goal.Status == "active" {
+				goal, err = setCodexGoalStatus(ctx, s, r, thread, "paused", nil, reason)
+				if err != nil {
+					return nil, err
+				}
+			}
+			return goal, nil
 		case "clear":
 			if err := r.call(ctx, "thread/goal/clear", map[string]any{"threadId": thread}, nil); err != nil {
 				return nil, fmt.Errorf("Codex could not clear the native goal")
 			}
 			s.mu.Lock()
 			s.goalActivationPending = false
+			s.goalPausedForWake = false
 			s.mu.Unlock()
 			recordCodexGoal(s, nil, nil, "person_clear")
 			return nil, nil
@@ -178,6 +197,7 @@ func (c *CodexCLIAdapter) prepareCodexGoalCommand(ctx context.Context, s *codexA
 		if err == nil {
 			s.mu.Lock()
 			s.goalActivationPending = false
+			s.goalPausedForWake = false
 			s.mu.Unlock()
 			recordCodexGoal(s, nil, emit, "person_clear")
 		}
@@ -220,6 +240,7 @@ func (c *CodexCLIAdapter) prepareCodexGoalCommand(ctx context.Context, s *codexA
 		return "", false, nil, fmt.Errorf("unsupported native goal command")
 	}
 	s.mu.Lock()
+	s.goalPausedForWake = false
 	s.goalActivationPending = true
 	s.mu.Unlock()
 	return "This thread's goal is already set. Do not call create_goal. Start working on it now: " + objective, true, nil, nil
@@ -318,6 +339,10 @@ func pauseCodexGoalForTurn(ctx context.Context, s *codexAppSession, r *codexRPC,
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	s.goalPausedForWake = pause.Reason == "background_wake" && goal != nil && (goal.Status == "active" || goal.Status == "paused" || goal.Status == "usage_limited")
+	s.mu.Unlock()
+
 	if goal != nil && (goal.Status == "active" || (goal.Status == "usage_limited" && pause.Reason == "background_wake")) {
 		_, err = setCodexGoalStatus(ctx, s, r, thread, "paused", emit, pause.Reason)
 		return err
