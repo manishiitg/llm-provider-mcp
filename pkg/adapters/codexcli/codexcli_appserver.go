@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ type codexAppSession struct {
 	threadID, turnID, cwd, model string
 	fingerprint                  [32]byte
 	fingerprintParts             map[string][32]byte
+	fingerprintCustom            map[string][32]byte
 	status                       *llmtypes.StatusLine
 	// A successful steer response acknowledges acceptance; the corresponding
 	// userMessage item is the durable acknowledgement, scoped to this send.
@@ -301,11 +303,13 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	}
 	fingerprint := sha256.Sum256(raw)
 	parts := codexFingerprintParts(config)
+	customParts := codexCustomFingerprintParts(config)
 	s.mu.Lock()
 	r := s.rpc
 	thread := s.threadID
 	oldFingerprint := s.fingerprint
 	oldParts := s.fingerprintParts
+	oldCustomParts := s.fingerprintCustom
 	s.mu.Unlock()
 	reason := "cold"
 	if r != nil {
@@ -329,7 +333,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		r = nil
 	}
 	if c.logger != nil {
-		c.logger.Infof("[CODEX_WARM] owner=%s persistent=%t action=%s changed=%s", owner, persistent, reason, codexFingerprintChanges(oldParts, parts))
+		c.logger.Infof("[CODEX_WARM] owner=%s persistent=%t action=%s changed=%s custom_keys=%s", owner, persistent, reason, codexFingerprintChanges(oldParts, parts), codexCustomFingerprintChanges(oldCustomParts, customParts))
 	}
 	if r == nil {
 		if oldFingerprint != ([32]byte{}) && oldFingerprint != fingerprint {
@@ -403,6 +407,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 		s.model = result.Model
 		s.fingerprint = fingerprint
 		s.fingerprintParts = parts
+		s.fingerprintCustom = customParts
 		s.status = nil
 		s.rateLimits = nil
 		s.mu.Unlock()
@@ -686,4 +691,55 @@ func codexFingerprintChanges(old, current map[string][32]byte) string {
 		return "none"
 	}
 	return strings.Join(changed, ",")
+}
+
+// Keep only private digests. Log names of changed transport metadata keys,
+// never their values. Added and removed keys both change the fingerprint.
+func codexCustomFingerprintParts(config map[string]any) map[string][32]byte {
+	parts := map[string][32]byte{}
+	for key, value := range config {
+		switch key {
+		case "model", "cwd", "runtime_dir", "system", "native_questions", "security", "env":
+			continue
+		}
+		raw, _ := json.Marshal(value)
+		parts[key] = sha256.Sum256(raw)
+	}
+	return parts
+}
+func codexCustomFingerprintChanges(old, current map[string][32]byte) string {
+	if old == nil {
+		return "initial"
+	}
+	names := map[string]bool{}
+	for key, value := range current {
+		if prior, ok := old[key]; !ok || prior != value {
+			names[codexDiagnosticKey(key)] = true
+		}
+	}
+	for key := range old {
+		if _, ok := current[key]; !ok {
+			names[codexDiagnosticKey(key)] = true
+		}
+	}
+	keys := make([]string, 0, len(names))
+	for key := range names {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return "none"
+	}
+	return strings.Join(keys, ",")
+}
+func codexDiagnosticKey(key string) string {
+	if len(key) == 0 || len(key) > 80 {
+		return "other"
+	}
+	for _, r := range key {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.') {
+			return "other"
+		}
+	}
+	return key
 }
