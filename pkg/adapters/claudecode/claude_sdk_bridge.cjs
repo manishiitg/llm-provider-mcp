@@ -12,12 +12,22 @@ const deny = () => ({ behavior: 'deny', message: 'The request was cancelled. Use
 // Native Agent launches can be asynchronous without a run_in_background input.
 // Track their real task bookends (including resumed runs), never prose/tool output.
 function createHelperTracker(publish, includeShell = false) {
-  const tools = new Map(), helpers = new Map();
+  const tools = new Map(), helpers = new Map(), shells = new Map();
   const isHelper = event => event.task_type === 'local_agent' || ['Agent', 'Task'].includes(tools.get(event.tool_use_id));
   const observe = event => {
     if (event.type === 'assistant') {
       for (const block of event.message?.content || []) {
         if (block.type === 'tool_use' && ['Agent', 'Task'].includes(block.name)) tools.set(block.id, block.name);
+        if (block.type === 'tool_use' && block.name === 'Bash') shells.set(block.id, {
+          command: typeof block.input?.command === 'string' ? block.input.command : '',
+          mode: block.input?.run_in_background === true ? 'explicit' : ''
+        });
+      }
+    }
+    if (event.type === 'user' && event.toolUseResult && Object.hasOwn(event.toolUseResult, 'timedOutAfterMs')) {
+      for (const block of event.message?.content || []) {
+        const shell = shells.get(block.tool_use_id);
+        if (block.type === 'tool_result' && shell && !shell.mode) shell.mode = 'auto';
       }
     }
     if (event.type !== 'system') return;
@@ -27,7 +37,8 @@ function createHelperTracker(publish, includeShell = false) {
       if (!entry.task_id || entry.ambient || entry.skip_transcript) continue;
       const previous = helpers.get(entry.task_id);
       if (previous?.run_id && entry.run_id && entry.run_id < previous.run_id) continue;
-      if (!previous && !isHelper(entry) && !(includeShell && entry.task_type === 'local_bash')) continue;
+      const shell = shells.get(entry.tool_use_id || previous?.tool_use_id);
+      if (!previous && !isHelper(entry) && !(includeShell && entry.task_type === 'local_bash' && shell?.mode)) continue;
       const usage = entry.usage;
       const measured = usage && Number.isSafeInteger(usage.total_tokens) && usage.total_tokens >= 0 ? { total_tokens: usage.total_tokens } : {};
       const duration = usage && Number.isSafeInteger(usage.duration_ms) && usage.duration_ms >= 0 ? { duration_ms: usage.duration_ms } : {};
@@ -44,6 +55,7 @@ function createHelperTracker(publish, includeShell = false) {
         ({ completed: 'finished', failed: 'failed', stopped: 'interrupted' }[entry.status]) : 'started';
       if (!state || (sameRun && previous.state !== 'started' && state === 'started')) continue;
       const helper = { ...(sameRun ? previous : {}), ...measured, ...duration,
+        ...(shell?.mode ? { command: shell.command, background_mode: shell.mode } : {}),
         kind: (sameRun && previous.kind) || (isHelper(entry) ? 'helper' : 'background_command'), updated_at: Date.now(), task_id: entry.task_id, run_id: entry.run_id || '',
         tool_use_id: entry.tool_use_id || (sameRun ? previous.tool_use_id : '') || '',
         description: entry.description || (sameRun ? previous.description : '') || 'Helper agent',
