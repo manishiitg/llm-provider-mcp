@@ -19,7 +19,7 @@ import (
 
 var agyNativeSessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 var agyAPIError = regexp.MustCompile(`(?s)Error (\d{3}), Message: (.*?), Status: ([A-Z_]+)`)
-var agyResetStamp = regexp.MustCompile(`\bquotaResetTimeStamp:([^\s\]]+)`)
+var agyResetStamp = regexp.MustCompile(`\bquotaResetTimeStamp:([0-9TtZz:+.\-]+)`)
 var agyResetDelay = regexp.MustCompile(`\b(?:quotaResetDelay|retryDelay):([0-9a-z.µμ]+)`)
 
 // Only typed refusal or this prompt's own error-step payload is an error carrier.
@@ -152,7 +152,7 @@ func (w agyACPOutcomeWatch) failure(model, stop string) error {
 			if err == nil {
 				var typ int
 				var payload []byte
-				err = db.QueryRowContext(context.Background(), `SELECT step_type,step_payload FROM steps WHERE idx>? ORDER BY idx DESC LIMIT 1`, w.floor).Scan(&typ, &payload)
+				err = db.QueryRowContext(context.Background(), `SELECT step_type,step_payload FROM steps WHERE idx>? AND ((step_type=? AND status=?) OR step_type IN (?,?)) ORDER BY idx DESC LIMIT 1`, w.floor, agyStepExecutorError, agyStepStatusDone, agyStepAssistant, agyStepToolCall).Scan(&typ, &payload)
 				_ = db.Close()
 				if err == nil && typ == 17 {
 					if len(payload) > 16384 {

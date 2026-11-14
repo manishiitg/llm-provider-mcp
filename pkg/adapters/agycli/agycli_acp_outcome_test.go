@@ -72,12 +72,12 @@ func TestAgyACPOutcomeScopesNativeErrorAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err = db.Exec(`CREATE TABLE steps(idx INTEGER PRIMARY KEY,step_type INTEGER,step_payload BLOB)`); err != nil {
+	if _, err = db.Exec(`CREATE TABLE steps(idx INTEGER PRIMARY KEY,step_type INTEGER,status INTEGER,step_payload BLOB)`); err != nil {
 		t.Fatal(err)
 	}
 	insert := func(idx, typ int, payload string) {
 		t.Helper()
-		if _, err := db.Exec(`INSERT INTO steps VALUES(?,?,?)`, idx, typ, []byte(payload)); err != nil {
+		if _, err := db.Exec(`INSERT INTO steps VALUES(?,?,3,?)`, idx, typ, []byte(payload)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -94,7 +94,12 @@ func TestAgyACPOutcomeScopesNativeErrorAndReset(t *testing.T) {
 	if llmerrors.KindOf(failure) != llmerrors.KindQuotaExhausted || llmerrors.RetryAtOrZero(failure).UTC().Format(time.RFC3339) != "2030-01-02T01:00:00Z" {
 		t.Fatalf("lost error or reset: %v", failure)
 	}
-	insert(2, 1, "normal final answer")
+	insert(2, 101, "system notice")
+	insert(3, agyStepCheckpoint, "checkpoint")
+	if llmerrors.KindOf(watch.failure("example-model", "end_turn")) != llmerrors.KindQuotaExhausted {
+		t.Fatal("trailing bookkeeping hid executor error")
+	}
+	insert(4, agyStepAssistant, "normal final answer")
 	if err := watch.failure("example-model", "end_turn"); err != nil {
 		t.Fatalf("non-final error was treated as outcome: %v", err)
 	}
@@ -139,8 +144,8 @@ func TestAgyACPTypedErrorsClassifyQuotaRetryAndUnavailableModel(t *testing.T) {
 	if llmerrors.KindOf(err) != llmerrors.KindModelNotFound {
 		t.Fatalf("raw unknown model: %v", err)
 	}
-	quota := agyACPRPCFailure("example-model", "native", &agyACPError{Code: 429, Message: "request rejected", Data: json.RawMessage(`{"reason":"QUOTA_EXHAUSTED","detail":"quotaResetDelay:1h"}`)})
-	if llmerrors.KindOf(quota) != llmerrors.KindQuotaExhausted || llmerrors.IsRetryable(quota) || llmerrors.RetryAtOrZero(quota).IsZero() {
+	quota := agyACPRPCFailure("example-model", "native", &agyACPError{Code: 429, Message: "request rejected", Data: json.RawMessage(`{"reason":"QUOTA_EXHAUSTED","detail":"quotaResetTimeStamp:2030-01-02T01:00:00Z"}`)})
+	if llmerrors.KindOf(quota) != llmerrors.KindQuotaExhausted || llmerrors.IsRetryable(quota) || llmerrors.RetryAtOrZero(quota).UTC().Format(time.RFC3339) != "2030-01-02T01:00:00Z" {
 		t.Fatalf("429 lost explicit quota/reset: %v", quota)
 	}
 	for _, code := range []int{429, 503} {
