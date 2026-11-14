@@ -707,7 +707,7 @@ func (s *claudeSDKSession) closeIfParked(closed, verb, reason string) bool {
 		s.mu.Unlock()
 		return false
 	}
-	if reason == "cap" && (!s.warm || len(s.tasks) > 0 || s.wakeFirst != "" || s.wakeGrace != nil) {
+	if (reason == "cap" || reason == "idle_compaction") && (!s.warm || len(s.tasks) > 0 || s.wakeFirst != "" || s.wakeGrace != nil) {
 		s.mu.Unlock()
 		return false
 	}

@@ -186,9 +186,17 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		if claudeResumeSessionIDFromStructuredOptions(opts) == "" {
 			return llmtypes.IdleCompactSkipResponse("claude-code", llmtypes.IdleCompactReasonNoSession), nil
 		}
-		if owner := claudeInteractiveSessionIDFromOptions(opts); owner != "" && claudeSDKSessionForOwner(owner) != nil {
-			// A kept session is running Claude's own background work.
-			return llmtypes.IdleCompactSkipResponse("claude-code", llmtypes.IdleCompactReasonBackgroundWork), nil
+		if session := claudeSDKSessionForOwner(claudeInteractiveSessionIDFromOptions(opts)); session != nil {
+			// A task-free warm query is disposable; actual work and exact pending
+			// wakes still block compaction. Wait for exit before opening its journal.
+			if !session.closeIfParked("stopped", "stopped", "idle_compaction") {
+				return llmtypes.IdleCompactSkipResponse("claude-code", llmtypes.IdleCompactReasonBackgroundWork), nil
+			}
+			select {
+			case <-session.exited:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 		prompt = claudeIdleCompactCommand
 	}
