@@ -71,6 +71,18 @@ func (a *MuseCLIAdapter) consumeMuseMSPTurn(ctx context.Context, s *museMSPSessi
 				continue
 			}
 			switch msg.Method {
+			case "session/todoListChanged":
+				var owner struct {
+					SessionID string `json:"sessionId"`
+					TurnID    string `json:"turnId"`
+				}
+				if json.Unmarshal(msg.Params, &owner) != nil || (owner.SessionID != "" && owner.SessionID != s.sessionID) || (owner.TurnID != "" && owner.TurnID != turnID) {
+					continue
+				}
+				if plan, ok := llmtypes.ParseCodingAgentPlan(msg.Params, "items"); ok {
+					plan.Provider, plan.NativeTurnID, plan.PlanID = "muse-cli", turnID, "muse:"+turnID
+					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeCodingAgentPlan, CodingAgentPlan: plan, Metadata: meta(nil)})
+				}
 			case "item/started", "item/updated", "item/completed":
 				var p struct {
 					Item museMSPItem `json:"item"`

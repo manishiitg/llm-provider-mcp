@@ -175,3 +175,26 @@ func TestCodexAppServerRequestsAndStreamsReasoningSummaries(t *testing.T) {
 		t.Fatalf("thinking stream=%q", reasoning.String())
 	}
 }
+
+// PLAT-746: the native turn plan updates in place; plan markdown is not todo state.
+func TestCodexAppServerEmitsStructuredPlanSnapshots(t *testing.T) {
+	r := &codexRPC{events: make(chan codexRPCMessage, 5), done: make(chan struct{})}
+	for _, raw := range []struct{ method, params string }{
+		{"turn/plan/updated", `{"threadId":"other","turnId":"turn","plan":[{"step":"Wrong chat","status":"completed"}]}`},
+		{"item/plan/delta", `{"threadId":"thread","turnId":"turn","itemId":"proposed","delta":"- [x] Guess"}`},
+		{"turn/plan/updated", `{"threadId":"thread","turnId":"turn","plan":[{"step":"Inspect","status":"in_progress"}]}`},
+		{"turn/plan/updated", `{"threadId":"thread","turnId":"turn","plan":[{"step":"Inspect","status":"completed"}]}`},
+		{"turn/completed", `{"threadId":"thread","turnId":"turn","turn":{"id":"turn","status":"completed"}}`},
+	} {
+		r.events <- codexRPCMessage{Method: raw.method, Params: json.RawMessage(raw.params)}
+	}
+	var plans []*llmtypes.CodingAgentPlan
+	_, err := (&CodexCLIAdapter{}).consumeAppTurn(context.Background(), &codexAppSession{threadID: "thread"}, r, "thread", "turn", func(ch llmtypes.StreamChunk) {
+		if ch.CodingAgentPlan != nil {
+			plans = append(plans, ch.CodingAgentPlan)
+		}
+	})
+	if err != nil || len(plans) != 2 || plans[0].PlanID != plans[1].PlanID || plans[0].Items[0].Status != "running" || plans[1].Items[0].Status != "completed" {
+		t.Fatalf("native plans lost/crossed chat: %+v %v", plans, err)
+	}
+}

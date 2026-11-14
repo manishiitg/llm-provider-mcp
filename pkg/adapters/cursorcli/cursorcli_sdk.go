@@ -725,6 +725,11 @@ func (c *CursorCLIAdapter) consumeSDKTurn(ctx context.Context, s *cursorSDKSessi
 					text.WriteString(event.Text)
 				}
 				emit(llmtypes.StreamChunk{Type: kind, Content: event.Text, Metadata: map[string]any{"cursor_session_id": s.agentID, "cursor_stream_source": "sdk", llmtypes.ContentDeltaMetadataKey: true}})
+			case "plan":
+				if plan, ok := llmtypes.ParseCodingAgentPlan(event.Args, "todos"); ok {
+					plan.Provider, plan.PlanID = "cursor-cli", s.agentID
+					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeCodingAgentPlan, CodingAgentPlan: plan, Metadata: meta})
+				}
 			case "tool":
 				afterTool = true
 				t := tools[event.CallID]

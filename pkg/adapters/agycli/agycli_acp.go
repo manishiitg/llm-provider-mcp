@@ -476,6 +476,7 @@ func (a *AgyCLIAdapter) consumeAgyACPTurn(ctx context.Context, s *agyACPSession,
 				Title      string          `json:"title"`
 				Status     string          `json:"status"`
 				RawInput   json.RawMessage `json:"rawInput"`
+				Entries    json.RawMessage `json:"entries"`
 				RawOutput  json.RawMessage `json:"rawOutput"`
 			} `json:"update"`
 		}
@@ -499,6 +500,12 @@ func (a *AgyCLIAdapter) consumeAgyACPTurn(ctx context.Context, s *agyACPSession,
 				text.WriteString(content.Text)
 			}
 			emit(llmtypes.StreamChunk{Type: kind, Content: content.Text, Metadata: map[string]any{"agy_session_id": s.sessionID, "agy_stream_source": "acp", llmtypes.ContentDeltaMetadataKey: true}})
+		case "plan":
+			raw, _ := json.Marshal(map[string]json.RawMessage{"entries": u.Entries})
+			if plan, ok := llmtypes.ParseCodingAgentPlan(raw, "entries"); ok {
+				plan.Provider, plan.PlanID = "agycli", s.sessionID
+				emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeCodingAgentPlan, CodingAgentPlan: plan, Metadata: meta})
+			}
 		case "tool_call", "tool_call_update":
 			t := tools[u.ToolCallID]
 			if t == nil {

@@ -191,6 +191,11 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 			}
 			metadata := map[string]any{"codex_thread_id": thread, "codex_turn_id": turn, "codex_stream_source": "app-server"}
 			switch msg.Method {
+			case "turn/plan/updated":
+				if plan, ok := llmtypes.ParseCodingAgentPlan(msg.Params, "plan"); ok {
+					plan.Provider, plan.NativeTurnID, plan.PlanID = "codex-cli", turn, thread+":"+turn
+					emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeCodingAgentPlan, CodingAgentPlan: plan, Metadata: metadata})
+				}
 			case "item/agentMessage/delta":
 				emitContent(event.ItemID, event.Delta, metadata)
 			case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":

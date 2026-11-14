@@ -138,16 +138,17 @@ type StatusLineProvider interface {
 // StreamChunk represents a single chunk in a streaming response
 // It can contain either content text or a complete tool call
 type StreamChunk struct {
-	Type         StreamChunkType // Type of chunk: "content", "reasoning", "tool_call", "terminal", or "status_line"
-	Content      string          // Text content (when Type is "content" or "reasoning")
-	Metadata     map[string]interface{}
-	ToolCall     *ToolCall     // Complete tool call (when Type is "tool_call")
-	ToolName     string        // Name of the tool (when Type is "tool_call_start" or "tool_call_end")
-	ToolCallID   string        // ID of the tool call (when Type is "tool_call_start" or "tool_call_end")
-	ToolArgs     string        // JSON arguments of the tool call (when Type is "tool_call_end")
-	ToolResult   string        // Tool execution result (when Type is "tool_call_end")
-	ToolDuration time.Duration // Duration of the tool call (when Type is "tool_call_end")
-	StatusLine   *StatusLine   // Generic statusline snapshot (when Type is "status_line")
+	CodingAgentPlan *CodingAgentPlan // Full provider-authored checklist snapshot.
+	Type            StreamChunkType  // Type of chunk: "content", "reasoning", "tool_call", "terminal", or "status_line"
+	Content         string           // Text content (when Type is "content" or "reasoning")
+	Metadata        map[string]interface{}
+	ToolCall        *ToolCall     // Complete tool call (when Type is "tool_call")
+	ToolName        string        // Name of the tool (when Type is "tool_call_start" or "tool_call_end")
+	ToolCallID      string        // ID of the tool call (when Type is "tool_call_start" or "tool_call_end")
+	ToolArgs        string        // JSON arguments of the tool call (when Type is "tool_call_end")
+	ToolResult      string        // Tool execution result (when Type is "tool_call_end")
+	ToolDuration    time.Duration // Duration of the tool call (when Type is "tool_call_end")
+	StatusLine      *StatusLine   // Generic statusline snapshot (when Type is "status_line")
 	// ContextCompaction is the CLI's compaction record (when Type is
 	// "context_compaction").
 	ContextCompaction *ContextCompaction

@@ -224,6 +224,10 @@ async function main() {
               turnEnded = false;
               stopQuiet();
             }
+            // The successful result is the complete list, including SDK merges.
+            if (update.type === 'tool-call-completed' && update.toolCall?.type === 'updateTodos' && update.toolCall.result?.status === 'success' && Array.isArray(update.toolCall.result.value?.todos)) {
+              emit({ type: 'plan', args: { todos: update.toolCall.result.value.todos } });
+            }
             if (update.type === 'text-delta') emit({ type: 'delta', kind: 'text', text: update.text });
             else if (update.type === 'thinking-delta') emit({ type: 'delta', kind: 'thinking', text: update.text });
           },
