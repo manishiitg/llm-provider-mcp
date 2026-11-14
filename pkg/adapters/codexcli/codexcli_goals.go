@@ -151,9 +151,9 @@ func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtype
 			// Register the paused-wake lifetime before the RPC: its native
 			// notification can finish the owning turn before the reply is read.
 			s.mu.Lock()
-			s.goalPausedForWake = action == "wake_pause" && (goal.Status == "active" || goal.Status == "paused")
+			s.goalPausedForWake = action == "wake_pause" && (goal.Status == "active" || goal.Status == "paused" || goal.Status == "usage_limited")
 			s.mu.Unlock()
-			if goal.Status == "active" {
+			if goal.Status == "active" || goal.Status == "usage_limited" {
 				goal, err = setCodexGoalStatus(ctx, s, r, thread, "paused", nil, reason)
 				if err != nil {
 					abandonCodexGoalWakePause(s, r, thread)
