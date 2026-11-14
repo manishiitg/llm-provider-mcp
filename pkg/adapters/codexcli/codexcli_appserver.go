@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -459,7 +460,52 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	if c.logger != nil {
 		c.logger.Infof("codex app-server turn started owner=%s thread=%s turn=%s", owner, thread, turn)
 	}
-	return c.consumeAppTurn(ctx, s, r, thread, turn, emit)
+	return c.consumeAppTurnWithCapacityRetry(ctx, s, r, owner, thread, turn, opts, emit)
+}
+
+func (c *CodexCLIAdapter) consumeAppTurnWithCapacityRetry(ctx context.Context, s *codexAppSession, r *codexRPC, owner, thread, turn string, opts *llmtypes.CallOptions, emit func(llmtypes.StreamChunk)) (*llmtypes.ContentResponse, error) {
+	var started struct {
+		Turn codexAppTurn `json:"turn"`
+	}
+	for attempt := 0; ; attempt++ {
+		response, turnErr := c.consumeAppTurn(ctx, s, r, thread, turn, emit)
+		var nativeErr *CodexTurnError
+		if !errors.As(turnErr, &nativeErr) || !nativeErr.Capacity() || attempt >= 5 {
+			return response, turnErr
+		}
+		delay := codexCapacityRetryWait(attempt)
+		emit(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeProviderRetry, ProviderRetry: &llmtypes.ProviderRetry{Provider: "codex-cli", Attempt: attempt + 1, MaxAttempts: 5, DelayMS: delay.Milliseconds()}})
+		if c.logger != nil {
+			c.logger.Infof("[CODEX_RETRY] owner=%s thread=%s turn=%s attempt=%d delay_ms=%d action=waiting reason=server_overloaded", owner, thread, turn, attempt+1, delay.Milliseconds())
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-r.done:
+			timer.Stop()
+			return nil, r.failure()
+		case <-timer.C:
+		}
+		// Codex already persisted the input. Continue that thread with an empty
+		// input; never resend the person's original message or attachments.
+		retryParams := codexAppTurnParams(thread, "", opts)
+		retryParams["input"] = []map[string]any{}
+		if err := r.call(ctx, "turn/start", retryParams, &started); err != nil {
+			return nil, err
+		}
+		turn = started.Turn.ID
+		if turn == "" {
+			return nil, fmt.Errorf("codex retry returned no turn id")
+		}
+		s.mu.Lock()
+		s.turnID = turn
+		s.mu.Unlock()
+		if c.logger != nil {
+			c.logger.Infof("[CODEX_RETRY] owner=%s thread=%s turn=%s attempt=%d action=started", owner, thread, turn, attempt+1)
+		}
+	}
 }
 
 func codexAppTextInput(text string) []map[string]any {
@@ -470,7 +516,8 @@ type codexAppTurn struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	Error  *struct {
-		Message string `json:"message"`
+		Message string          `json:"message"`
+		Info    json.RawMessage `json:"codexErrorInfo"`
 	} `json:"error"`
 }
 type codexAppUsage struct {
@@ -742,4 +789,31 @@ func codexDiagnosticKey(key string) string {
 		}
 	}
 	return key
+}
+
+var codexCapacityRetryWait = codexCapacityRetryDelay
+
+func codexCapacityRetryDelay(attempt int) time.Duration {
+	delay := 2 * time.Second * time.Duration(1<<attempt)
+	if delay > 30*time.Second {
+		return 30 * time.Second
+	}
+	return delay
+}
+
+func codexAppErrorInfo(raw json.RawMessage) string {
+	var code string
+	if json.Unmarshal(raw, &code) == nil {
+		if code == "serverOverloaded" || code == codexErrorInfoServerOverloaded {
+			return codexErrorInfoServerOverloaded
+		}
+		return code
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil {
+		if _, ok := object["serverOverloaded"]; ok {
+			return codexErrorInfoServerOverloaded
+		}
+	}
+	return ""
 }

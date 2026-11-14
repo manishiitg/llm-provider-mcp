@@ -380,7 +380,11 @@ func (c *CodexCLIAdapter) consumeAppTurn(ctx context.Context, s *codexAppSession
 					if event.Turn.Error != nil {
 						message = event.Turn.Error.Message
 					}
-					return nil, &CodexTurnError{Message: message}
+					info := ""
+					if event.Turn.Error != nil {
+						info = codexAppErrorInfo(event.Turn.Error.Info)
+					}
+					return nil, &CodexTurnError{Message: message, Info: info}
 				}
 			}
 		}

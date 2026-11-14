@@ -62,6 +62,9 @@ type claudeStreamEvent struct {
 	ParentToolUseID string               `json:"parent_tool_use_id,omitempty"`
 	Type            string               `json:"type"`
 	Subtype         string               `json:"subtype,omitempty"`
+	Attempt         int                  `json:"attempt,omitempty"`
+	MaxRetries      int                  `json:"max_retries,omitempty"`
+	RetryDelayMS    int64                `json:"retry_delay_ms,omitempty"`
 	SessionID       string               `json:"session_id,omitempty"`
 	Message         *claudeStreamMessage `json:"message,omitempty"`
 	Result          string               `json:"result,omitempty"`
@@ -635,6 +638,10 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				}
 
 			case "system":
+				if ev.Subtype == "api_retry" && ev.Attempt > 0 {
+					emitChunk(llmtypes.StreamChunk{Type: llmtypes.StreamChunkTypeProviderRetry, ProviderRetry: &llmtypes.ProviderRetry{Provider: "claude-code", Attempt: ev.Attempt, MaxAttempts: ev.MaxRetries, DelayMS: ev.RetryDelayMS}})
+				}
+
 				if ev.Subtype == "init" && ev.Model != "" {
 					liveUsage.model = ev.Model
 				}
