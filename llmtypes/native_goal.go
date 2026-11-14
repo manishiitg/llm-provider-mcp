@@ -2,7 +2,6 @@ package llmtypes
 
 import (
 	"context"
-	"errors"
 	"github.com/manishiitg/multi-llm-provider-go/llmerrors"
 )
 
@@ -57,8 +56,10 @@ func (e *NativeGoalUnavailableError) Error() string {
 	return "Goal mode is not available for " + e.Program + "."
 }
 
-func (e *NativeGoalUnavailableError) Unwrap() error {
-	return &llmerrors.Error{Kind: llmerrors.KindInvalidRequest, Provider: e.Program, Err: errors.New(e.Error())}
+// Wrap once so normal provider classification preserves the typed cause and
+// never retries or translates an unavailable feature into another program.
+func NativeGoalUnavailable(program string) error {
+	return &llmerrors.Error{Kind: llmerrors.KindInvalidRequest, Provider: program, Err: &NativeGoalUnavailableError{Program: program}}
 }
 
 const StreamChunkTypeNativeGoal StreamChunkType = "native_goal"
