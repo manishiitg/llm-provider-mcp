@@ -80,9 +80,9 @@ func Capabilities(provider string) []string {
 	case "pi-cli":
 		return []string{"reply", "tool", "compaction", "usage"}
 	case "agy-cli":
-		return []string{"reply", "tool", "error", "notice"}
+		return []string{"reply", "tool", "helper", "error", "notice"}
 	case "cursor-cli":
-		return []string{"reply", "tool"}
+		return []string{"reply", "tool", "helper"}
 	}
 	return nil
 }

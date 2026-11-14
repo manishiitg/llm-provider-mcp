@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -87,6 +88,13 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 				switch status {
 				case 3:
 					r.State = "finished"
+					// invoke_subagent launches children; each one is a row until its own conversation ends.
+					for _, id := range agycli.NativeSubagentIDs(payload) {
+						if _, known := b.Next.Tasks[id]; !known {
+							b.Next.Tasks[id] = "launched"
+							emit(&b, llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: "subagent:" + id + ":started", Kind: "helper", State: "started", TaskID: id, ToolID: id, Name: "Subagent", HelperType: "invoke_subagent"})
+						}
+					}
 				case 6:
 					r.State = "stopped"
 				case 0, 1, 2:
@@ -144,5 +152,21 @@ func readDatabase(ctx context.Context, provider, session, path string, c Cursor)
 	}
 	count, err := consume(rows, false)
 	b.CaughtUp = count < 1024
+	if err == nil {
+		// A launched child whose own conversation has ended closes its row.
+		ids := make([]string, 0, len(b.Next.Tasks))
+		for id, state := range b.Next.Tasks {
+			if state == "launched" {
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			if agycli.NativeSubagentSettled(filepath.Join(filepath.Dir(path), id+".db")) {
+				delete(b.Next.Tasks, id)
+				emit(&b, llmtypes.NativeRecord{Provider: provider, SessionID: session, ID: "subagent:" + id + ":finished", Kind: "helper", State: "finished", TaskID: id, ToolID: id, Name: "Subagent", HelperType: "invoke_subagent"})
+			}
+		}
+	}
 	return b, err
 }

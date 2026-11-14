@@ -56,6 +56,11 @@ func TestNativeRecordConformance(t *testing.T) {
 {"sequence":4,"payload":{"kind":"task","run_id":"r1","event":{"kind":"status","task_id":"task1","details":{"phase":"stream_succeeded","facets":[{"kind":"external_attempt","attempt":2}]}}}}
 {"sequence":5,"payload":{"kind":"run","run_id":"r1","event":{"kind":"terminal","terminal":"completed","turn_duration_ms":500}}}
 `, []string{"status:opening_stream", "retry:retrying", "status:stream_succeeded", "turn:completed"}},
+		// A Muse task that fails or is cancelled closes its row like a completed one.
+		{"muse-cli", `{"sequence":6,"payload":{"kind":"task","run_id":"r2","event":{"kind":"task_started","task_id":"t1"}}}
+{"sequence":7,"payload":{"kind":"task","run_id":"r2","event":{"kind":"task_failed","task_id":"t1"}}}
+{"sequence":8,"payload":{"kind":"task","run_id":"r2","event":{"kind":"task_cancelled","task_id":"t2"}}}
+`, []string{"helper:started", "helper:failed", "helper:stopped"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {

@@ -464,6 +464,10 @@ func decodeMuse(b *Batch, session string, row map[string]any) {
 	case "task_proposed", "task_scheduled", "task_started", "task_completed":
 		r.Kind, r.State = "helper", strings.TrimPrefix(kind, "task_")
 		emit(b, r)
+	case "task_failed", "task_cancelled":
+		// A task that ended without completing still closes its row (the chat list reads failed and stopped as ended).
+		r.Kind, r.State = "helper", map[string]string{"task_failed": "failed", "task_cancelled": "stopped"}[kind]
+		emit(b, r)
 	case "terminal":
 		r.Kind, r.State = "turn", text(p, "terminal")
 		r.DurationMS = number(p, "turn_duration_ms")
