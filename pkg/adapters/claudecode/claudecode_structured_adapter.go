@@ -611,6 +611,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 	sawResult := false
 	resultIsError := false
 	terminalReason := ""
+	abortedTurn := false
 	// pendingToolCalls correlates a ToolCallEnd back to its Start: the name
 	// and args are only present on the tool_use block (an "assistant" event),
 	// while the completion is a SEPARATE later "user" event carrying only the
@@ -856,6 +857,9 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 				sawResult = true
 				resultIsError = ev.IsError
 				terminalReason = ev.TerminalReason
+				// An abort that comes after an earlier result already gave the answer (work moved aside, stopped
+				// later) leaves that answer standing; only an abort with no answer given is an interruption.
+				abortedTurn = claudeAbortedTerminalReason(ev.TerminalReason) && strings.TrimSpace(answerText) == ""
 				for _, line := range append([]string{ev.Result}, ev.Errors...) {
 					if isClaudeDiagnosticResult(line) {
 						c.logger.Infof("[CLAUDE_SDK] dropped diagnostic result: %s", strings.TrimSpace(line))
@@ -962,7 +966,7 @@ func (c *ClaudeCodeInteractiveAdapter) generateContentStructured(ctx context.Con
 		// A turn the person stopped is a stop, not a failure (PLAT-872-65).
 		return nil, fmt.Errorf("Claude turn stopped by the person: %w", context.Canceled)
 	}
-	if claudeAbortedTerminalReason(terminalReason) {
+	if abortedTurn {
 		// An explicit abort overrides a success envelope: the turn was interrupted, not answered.
 		c.logger.Infof("[CLAUDE_SDK] session=%s ended interrupted terminal_reason=%s", sessionID, terminalReason)
 		return nil, fmt.Errorf("Claude turn was interrupted: %w", context.Canceled)
