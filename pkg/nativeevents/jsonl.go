@@ -70,6 +70,8 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 					out.Kind = "background_command"
 					out.CommandLabel, out.BackgroundMode = shell.Label, shell.Mode
 				}
+				h := b.Next.HelperTools[out.ToolID]
+				out.HelperType, out.HelperDescription, out.HelperMode = h.Type, h.Description, h.Mode
 				switch notice.Status {
 				case "completed":
 					out.State = "finished"
@@ -111,15 +113,22 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 				out.State = "failed"
 			}
 			if name == "Agent" || name == "Task" {
-				// The CLI's structured launch result supplies the task identity.
+				// Keep the normal step and a separately identified helper fact.
+				emit(b, out)
+				out.ID += ":helper"
+				out.Kind = "helper"
+				h := b.Next.HelperTools[tool]
 				result := object(row["toolUseResult"])
 				task := text(result, "agentId", "taskId", "task_id")
 				if task != "" {
 					b.Next.Tasks[task] = tool
-					if asynchronous, _ := result["isAsync"].(bool); asynchronous {
-						out.Kind, out.State, out.TaskID = "helper", "started", task
-					}
+					out.TaskID = task
 				}
+				if asynchronous, _ := result["isAsync"].(bool); asynchronous {
+					out.State, h.Mode = "started", "async"
+					b.Next.HelperTools[tool] = h
+				}
+				out.HelperType, out.HelperDescription, out.HelperMode = h.Type, h.Description, h.Mode
 			}
 			if name == "Bash" {
 				result := object(row["toolUseResult"])
@@ -163,6 +172,21 @@ func decodeClaude(b *Batch, session string, row map[string]any) {
 			case "tool_use":
 				out.Kind, out.State, out.ToolID, out.Name = "tool", "started", text(block, "id"), text(block, "name")
 				b.Next.Tools[out.ToolID] = out.Name
+				if out.Name == "Agent" || out.Name == "Task" {
+					input := object(block["input"])
+					h := HelperTool{Type: commandlabel.Label(text(input, "subagent_type")), Description: commandlabel.Label(text(input, "description")), Mode: "foreground"}
+					if async, _ := input["run_in_background"].(bool); async {
+						h.Mode = "async"
+					}
+					b.Next.HelperTools[out.ToolID] = h
+					emit(b, out)
+					helper := out
+					helper.ID += ":helper"
+					helper.Kind = "helper"
+					helper.HelperType, helper.HelperDescription, helper.HelperMode = h.Type, h.Description, h.Mode
+					emit(b, helper)
+					continue
+				}
 				if out.Name == "Bash" {
 					input := object(block["input"])
 					shell := ShellCommand{Label: commandlabel.Label(text(input, "command"))}

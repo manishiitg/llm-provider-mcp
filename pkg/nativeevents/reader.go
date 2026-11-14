@@ -27,7 +27,14 @@ type ShellCommand struct {
 	Mode  string `json:"mode,omitempty"`
 }
 
+type HelperTool struct {
+	Type        string `json:"type,omitempty"`
+	Description string `json:"description,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+}
+
 type Cursor struct {
+	HelperTools   map[string]HelperTool   `json:"helper_tools,omitempty"`
 	ShellCommands map[string]ShellCommand `json:"shell_commands,omitempty"`
 	Offset        int64                   `json:"offset"`
 	TurnID        string                  `json:"turn_id,omitempty"`
@@ -175,6 +182,10 @@ func Read(ctx context.Context, provider, sessionID, path string, cursor Cursor) 
 
 func cloneCursor(c Cursor) Cursor {
 	n := c
+	n.HelperTools = map[string]HelperTool{}
+	for k, v := range c.HelperTools {
+		n.HelperTools[k] = v
+	}
 	n.ShellCommands = map[string]ShellCommand{}
 	for k, v := range c.ShellCommands {
 		n.ShellCommands[k] = v
