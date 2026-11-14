@@ -254,7 +254,7 @@ func (c *CodexCLIAdapter) generateContentAppServer(ctx context.Context, messages
 	prompt := buildCodexInteractivePrompt(conversation)
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
-	if prompt == "" && !launchOnly && !idleCompact && len(collectCodexImageContent(messages)) == 0 && len(llmtypes.NativeImageInputsForSession(ctx, codexInteractiveSessionIDFromOptions(opts))) == 0 {
+	if prompt == "" && !launchOnly && !idleCompact && len(collectCodexImageContent(llmtypes.PendingHumanMessages(messages))) == 0 && len(llmtypes.NativeImageInputsForSession(ctx, codexInteractiveSessionIDFromOptions(opts))) == 0 {
 		return nil, fmt.Errorf("codex-cli prompt is empty")
 	}
 	resume, err := codexValidatedResumeSessionIDFromOptions(opts)
