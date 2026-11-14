@@ -223,7 +223,7 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	prompt := buildPiPrompt(conversation)
 	launchOnly := llmtypes.CodingProviderLaunchOnlyFromOptions(opts)
 	idleCompact := llmtypes.CodingProviderIdleCompactFromOptions(opts)
-	if strings.TrimSpace(prompt) == "" && !launchOnly && !idleCompact {
+	if strings.TrimSpace(prompt) == "" && !launchOnly && !idleCompact && !piHasPendingImages(ctx, piInteractiveSessionIDFromOptions(opts), conversation) {
 		return nil, fmt.Errorf("pi-cli prompt is empty")
 	}
 	resume := piResumeSessionIDFromOptions(opts)
@@ -356,19 +356,28 @@ func (p *PiCLIAdapter) generateContentRPC(ctx context.Context, messages []llmtyp
 	if idleCompact {
 		return compactPiRPC(turnCtx, s, r, emit)
 	}
-	// Only the newest user message is sent: Pi's saved session owns history.
+	params, closeImages, prepErr := piParamsWithImages(turnCtx, owner, map[string]any{"message": prompt}, conversation)
+	if prepErr != nil {
+		return nil, prepErr
+	}
+	// Only pending human inputs are sent: Pi's saved session owns history.
 	s.mu.Lock()
 	s.turnID = "pi-turn-" + piRandomHex(8)
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); s.turnID = ""; s.mu.Unlock() }()
 	turnCtx = llmtypes.ScopeCodingAgentQuestions(turnCtx, "pi-cli", owner)
 	accepted := make(chan piRPCAccepted, 1)
+	callDone := make(chan struct{})
 	go func() {
+		defer close(callDone)
+		defer closeImages()
 		var reply piRPCAccepted
-		reply.Err = r.call(turnCtx, "prompt", map[string]any{"message": prompt}, &reply)
+		reply.Err = r.callPrepared(turnCtx, "prompt", params, &reply)
+		finishPiImageDelivery(owner, params, reply.Err)
 		accepted <- reply
 	}()
 
+	defer func() { cancel(); <-callDone }()
 	return p.consumeRPCTurn(turnCtx, s, r, emit, accepted)
 }
 

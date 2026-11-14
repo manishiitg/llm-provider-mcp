@@ -12,10 +12,20 @@ import (
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
 
-func sendPiRPCInput(ctx context.Context, owner, message string) error {
+func sendPiRPCInput(ctx context.Context, owner, message string) (err error) {
 	s := piRPCSessionForOwner(owner)
 	if s == nil {
 		return fmt.Errorf("%w: no active Pi RPC session for owner %s", llmtypes.ErrCodingAgentInputNotSent, owner)
+	}
+	params, closeImages, err := piParamsWithImages(ctx, owner, map[string]any{"message": message}, nil)
+	if err != nil {
+		return fmt.Errorf("%w: image preparation did not complete", llmtypes.ErrCodingAgentInputNotSent)
+	}
+	defer closeImages()
+	defer func() { finishPiImageDelivery(owner, params, err) }()
+	// Preparation may outlive the native turn. Re-read only after it finishes.
+	if piRPCSessionForOwner(owner) != s {
+		return fmt.Errorf("%w: Pi session changed during image preparation", llmtypes.ErrCodingAgentInputNotSent)
 	}
 	s.mu.Lock()
 	r, turn := s.rpc, s.turnID
@@ -23,13 +33,20 @@ func sendPiRPCInput(ctx context.Context, owner, message string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: Pi has no active turn; start a normal turn", llmtypes.ErrCodingAgentInputNotSent)
 	}
+	select {
+	case <-r.done:
+		s.mu.Unlock()
+		return fmt.Errorf("%w: Pi process ended during image preparation", llmtypes.ErrCodingAgentInputNotSent)
+	default:
+	}
 	receipt := &piRPCReceipt{text: strings.TrimSpace(message), at: time.Now(), observed: make(chan struct{})}
 	s.receipts = append(s.receipts, receipt)
 	s.mu.Unlock()
 	var result struct {
 		Disposition string `json:"disposition"`
 	}
-	if err := r.call(ctx, "steer", map[string]any{"message": message}, &result); err != nil {
+	err = r.callPrepared(ctx, "steer", params, &result)
+	if err != nil {
 		return err
 	}
 	if result.Disposition == "handled" {
