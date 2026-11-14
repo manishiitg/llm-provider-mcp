@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/manishiitg/multi-llm-provider-go/llmtypes"
 )
@@ -21,7 +22,8 @@ type imageFrameWriter struct {
 	frames       []codexRPCMessage
 }
 
-func (w *imageFrameWriter) Close() error { return nil }
+func (w *imageFrameWriter) Close() error                      { return nil }
+func (w *imageFrameWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
 func (w *imageFrameWriter) Write(p []byte) (int, error) {
 	w.largestWrite = max(w.largestWrite, len(p))
 	n, _ := w.Buffer.Write(p)
@@ -63,7 +65,9 @@ func TestCodexNativeImagesPromptSteerAndRefusedDelivery(t *testing.T) {
 		opened++
 		return &imageClosedReader{strings.NewReader(data), &closed}, "image/png", int64(len(data)), nil
 	}}
-	ctx := llmtypes.WithNativeImageInputs(context.Background(), owner, []llmtypes.NativeImageInput{input})
+	baseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx := llmtypes.WithNativeImageInputs(baseCtx, owner, []llmtypes.NativeImageInput{input})
 	params, cleanup, err := codexParamsWithImages(ctx, owner, codexAppTurnParams("thread", "Question", &llmtypes.CallOptions{}), nil)
 	if err != nil {
 		t.Fatal(err)
