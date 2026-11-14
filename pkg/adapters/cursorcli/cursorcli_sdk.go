@@ -38,20 +38,24 @@ var cursorSDKBridge []byte
 const cursorSDKMarker = "\x01aw "
 
 type cursorSDKEvent struct {
-	Type     string          `json:"type"`
-	AgentID  string          `json:"agent_id"`
-	Resumed  bool            `json:"resumed"`
-	Kind     string          `json:"kind"`
-	Text     string          `json:"text"`
-	CallID   string          `json:"call_id"`
-	Name     string          `json:"name"`
-	Status   string          `json:"status"`
-	Args     json.RawMessage `json:"args"`
-	Result   json.RawMessage `json:"result"`
-	Usage    *cursorSDKUsage `json:"usage"`
-	ID       string          `json:"id"`
-	Accepted bool            `json:"accepted"`
-	Error    string          `json:"error"`
+	Type        string          `json:"type"`
+	RunID       string          `json:"run_id"`
+	ParentRunID string          `json:"parent_run_id"`
+	EventType   string          `json:"event_type"`
+	Phase       string          `json:"phase"`
+	AgentID     string          `json:"agent_id"`
+	Resumed     bool            `json:"resumed"`
+	Kind        string          `json:"kind"`
+	Text        string          `json:"text"`
+	CallID      string          `json:"call_id"`
+	Name        string          `json:"name"`
+	Status      string          `json:"status"`
+	Args        json.RawMessage `json:"args"`
+	Result      json.RawMessage `json:"result"`
+	Usage       *cursorSDKUsage `json:"usage"`
+	ID          string          `json:"id"`
+	Accepted    bool            `json:"accepted"`
+	Error       string          `json:"error"`
 	// Stale is how the bridge cleared a run an earlier bridge left active: cancelled or new_agent.
 	Stale      string `json:"stale"`
 	StaleAgent string `json:"stale_agent"`
@@ -126,6 +130,7 @@ type cursorSDKUsage struct {
 }
 
 type cursorSDKProcess struct {
+	observe func(cursorSDKEvent)
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	writeMu sync.Mutex
@@ -213,6 +218,14 @@ func (p *cursorSDKProcess) read(stdout io.Reader) {
 		if err := json.Unmarshal(line, &event); err != nil {
 			p.finish(fmt.Errorf("invalid Cursor SDK bridge event: %w", err))
 			return
+		}
+		if event.Type == "background_meta" {
+			// Metadata never enters the foreground event queue: the bridge
+			// can report a late signal when no prompt is consuming it.
+			if p.observe != nil {
+				p.observe(event)
+			}
+			continue
 		}
 		if event.Type == "steer_accepted" {
 			p.mu.Lock()
@@ -410,6 +423,12 @@ func (c *CursorCLIAdapter) launchSDK(ctx context.Context, opts *llmtypes.CallOpt
 		}()
 	}
 	p := &cursorSDKProcess{cmd: cmd, stdin: stdin, events: make(chan cursorSDKEvent, 4096), done: make(chan struct{}), exited: make(chan struct{}), acks: map[string]chan bool{}, stop: stop}
+	p.observe = func(event cursorSDKEvent) {
+		if c.logger != nil {
+			c.logger.Infof("[CURSOR_BACKGROUND] owner=%s agent=%s run=%s parent_run=%s call=%s action=observed kind=%s event=%s status=%s phase=%s", owner, event.AgentID, event.RunID, event.ParentRunID, event.CallID, event.Kind, event.EventType, event.Status, event.Phase)
+		}
+	}
+
 	if err = cmd.Start(); err != nil {
 		stop()
 		stdin.Close()
