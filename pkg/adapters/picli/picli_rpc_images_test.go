@@ -231,3 +231,25 @@ func (r piRepeatedByte) Read(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// PR184: filtering any field named content/images corrupted structured tool
+// arguments. Only actual native message content may lose image data.
+func TestPiRPCImageEchoPreservesToolArguments(t *testing.T) {
+	lines := []string{
+		`{"type":"tool_execution_start","toolCallId":"one","toolName":"write","args":{"content":[{"type":"record","data":"important user data"}],"images":[{"data":"also important"}]}}`,
+		`{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"two","name":"write","arguments":{"content":[{"data":"nested content"}],"images":[{"data":"nested images"}]}}]}}`,
+		`{"type":"tool_execution_end","result":{"content":[{"type":"text","text":"ok"}],"details":{"images":[{"data":"custom result"}]}}}`,
+	}
+	for _, line := range lines {
+		rpc := &piRPC{stdin: &piImageFrameWriter{}, done: make(chan struct{}), events: make(chan piRPCRecord, 1), stop: func() {}}
+		rpc.read(strings.NewReader(line + "\n"))
+		select {
+		case record := <-rpc.events:
+			if string(record.Raw) != line {
+				t.Fatal("tool argument/result bytes were altered", string(record.Raw))
+			}
+		default:
+			t.Fatal("tool frame was not readable", rpc.failure())
+		}
+	}
+}
