@@ -200,6 +200,11 @@ func agyACPRPCFailure(model, session string, err error) error {
 	if !errors.As(err, &rpc) {
 		return err
 	}
+	carrier := rpc.Message + " " + string(rpc.Data)
+	// Explicit quota/reset details win over a generic HTTP status (including 429).
+	if strings.Contains(carrier, "QUOTA_EXHAUSTED") {
+		return agyACPOutcomeError(model, "", carrier, time.Now())
+	}
 	if rpc.Code == 429 || (rpc.Code >= 500 && rpc.Code < 600) {
 		kind := llmerrors.KindServerError
 		if rpc.Code == 429 {
@@ -208,8 +213,7 @@ func agyACPRPCFailure(model, session string, err error) error {
 		log.Printf("[AGY_OUTCOME] session=%s source=rpc kind=%s status=%d", session, kind, rpc.Code)
 		return &llmerrors.Error{Provider: "agy-cli", Model: model, Kind: kind, Status: rpc.Code, Err: errors.New("Antigravity could not finish this request.")}
 	}
-	carrier := rpc.Message + " " + string(rpc.Data)
-	if agyAPIError.MatchString(carrier) || strings.Contains(carrier, "QUOTA_EXHAUSTED") {
+	if agyAPIError.MatchString(carrier) {
 		return agyACPOutcomeError(model, "", carrier, time.Now())
 	}
 	return err

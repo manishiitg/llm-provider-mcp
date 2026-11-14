@@ -139,6 +139,10 @@ func TestAgyACPTypedErrorsClassifyQuotaRetryAndUnavailableModel(t *testing.T) {
 	if llmerrors.KindOf(err) != llmerrors.KindModelNotFound {
 		t.Fatalf("raw unknown model: %v", err)
 	}
+	quota := agyACPRPCFailure("example-model", "native", &agyACPError{Code: 429, Message: "request rejected", Data: json.RawMessage(`{"reason":"QUOTA_EXHAUSTED","detail":"quotaResetDelay:1h"}`)})
+	if llmerrors.KindOf(quota) != llmerrors.KindQuotaExhausted || llmerrors.IsRetryable(quota) || llmerrors.RetryAtOrZero(quota).IsZero() {
+		t.Fatalf("429 lost explicit quota/reset: %v", quota)
+	}
 	for _, code := range []int{429, 503} {
 		if !llmerrors.IsRetryable(agyACPRPCFailure("example-model", "native", &agyACPError{Code: code, Message: "request failed"})) {
 			t.Fatalf("RPC %d not retryable", code)
