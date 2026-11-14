@@ -132,6 +132,9 @@ func ControlCodexNativeGoal(ctx context.Context, owner, action string) (*llmtype
 		}
 		switch action {
 		case "pause":
+			if goal.Status != "active" {
+				return goal, nil
+			}
 			return setCodexGoalStatus(ctx, s, r, thread, "paused", nil, "person_pause")
 		case "clear":
 			if err := r.call(ctx, "thread/goal/clear", map[string]any{"threadId": thread}, nil); err != nil {
