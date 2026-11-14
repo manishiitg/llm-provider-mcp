@@ -210,9 +210,9 @@ async function main() {
             } else if (update.type === 'tool-call-delta') {
               outstandingWork.add(update.callId);
               stopQuiet();
-            } else if (update.type === 'tool-call-completed' && ['shell', 'task'].includes(update.toolCall?.type)) {
+            } else if (update.type === 'tool-call-completed') {
               outstandingWork.delete(update.callId);
-              if (update.toolCall.type === 'task' && update.toolCall.result?.status === 'success' && update.toolCall.result.value?.isBackground === true) detachedWork.add(update.callId);
+              if (update.toolCall?.type === 'task' && update.toolCall.result?.status === 'success' && update.toolCall.result.value?.isBackground === true) detachedWork.add(update.callId);
               else detachedWork.delete(update.callId);
               armQuiet();
             }
