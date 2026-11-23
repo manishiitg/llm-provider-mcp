@@ -1,5 +1,7 @@
 # Multi-LLM Provider for Go
 
+> **This repository has moved.** It now lives in [manishiitg/agentworks](https://github.com/manishiitg/agentworks/tree/dev/multi-llm-provider-go) as the `multi-llm-provider-go/` folder, with its full history (#3608). This repository is archived and no longer updated. The Go module path `github.com/manishiitg/multi-llm-provider-go` is unchanged.
+
 [![CI](https://github.com/manishiitg/llm-provider-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/manishiitg/llm-provider-mcp/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/manishiitg/llm-provider-mcp)](https://github.com/manishiitg/llm-provider-mcp/releases)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
